@@ -17,6 +17,8 @@
 
 #include <time.h>
 #include <vector>
+#include <bitset>
+#include <math.h>
 #include "K2tree.h"
 
 // Includes bitmap_helpers.h for bitmap file open/save/compare operations.
@@ -88,7 +90,7 @@ void bitsTest() {
   CmThreadSpace *thread_space = nullptr;
   cm_result_check(device->CreateThreadSpace(width, height, thread_space));
 
-  // Creates a task queue.	
+  // Creates a task queue.
   // The CmQueue is an in-order queue. Tasks get executed according to the
   // order they are enqueued. The next task does not start execution until the
   // current task finishes.
@@ -183,7 +185,7 @@ bool loadMatrix(uint32_t * k2treeMatrix, string filename) {
   while (file >> value)
   {
     // Add the integers from a line to a 1D array (vector)
-    k2treeMatrix[i++]= value;
+    k2treeMatrix[i++] = value;
   }
   file.close();
   return true;
@@ -206,13 +208,13 @@ bool loadFromFile(std::vector<uint32_t> &data, string filename) {
 
 void K2treeConstructionTest(unsigned int size, string filename) {
 
-  int iterations = 0, tempSize = size/K2_ENTRIES;
+  int iterations = 0, tempSize = size / K2_ENTRIES;
 
-  while (tempSize >= K2_ENTRIES*4) { // minimum matriz size to dispatch kernels
+  while (tempSize >= K2_ENTRIES * 4) { // minimum matriz size to dispatch kernels
     iterations++;
     tempSize /= K2_ENTRIES;
   }
-  std::cout << "Will dispatch Kernel " << iterations << " times\n";
+  std::cout << "Will dispatch Kernel " << iterations << " times for " << filename << "\n";
 
   uint32_t *k2treeMatrix;
   k2treeMatrix = (uint32_t*)CM_ALIGNED_MALLOC((size) * sizeof(uint32_t), 0x1000);
@@ -223,8 +225,8 @@ void K2treeConstructionTest(unsigned int size, string filename) {
 
   // Allocate space for final K2tree structures L and T
   uint64_t *L;
-  L = (uint64_t*)CM_ALIGNED_MALLOC((size/64) * sizeof(uint64_t), 0x1000);
-  memset(L, 0, sizeof(uint64_t) * (size/64));
+  L = (uint64_t*)CM_ALIGNED_MALLOC((size / 64) * sizeof(uint64_t), 0x1000);
+  memset(L, 0, sizeof(uint64_t) * (size / 64));
   uint64_t *T;
   T = (uint64_t*)CM_ALIGNED_MALLOC((size / 64) * sizeof(uint64_t), 0x1000);
   memset(T, 0, sizeof(uint64_t) * (size / 64));
@@ -249,8 +251,8 @@ void K2treeConstructionTest(unsigned int size, string filename) {
     Touts[i] = (uint32_t *)CM_ALIGNED_MALLOC(Tsizes[i] * sizeof(uint32_t), 0x1000);
   }
 
-  for(int i = 0; i <= iterations; i++)
-    std::cout <<  "iteration " << i << ": "<< size << " " << Lsize << " " << Tsizes[i] << " " << total_threads/pow(64,i) << endl;
+  for (int i = 0; i <= iterations; i++)
+    std::cout << "iteration " << i << ": " << size << " " << Lsize << " " << Tsizes[i] << " " << total_threads / pow(64, i) << endl;
   // Creates a CmDevice from scratch.
   // Param device: pointer to the CmDevice object.
   // Param version: CM API version supported by the runtime library.
@@ -291,20 +293,20 @@ void K2treeConstructionTest(unsigned int size, string filename) {
       CM_KERNEL_FUNCTION(cmk_mid_levels_construction),
       mid_levels_kernel[i]));
   }
-  
-  
+
+
   std::cout << "# threads Kernel 1: " << total_threads << endl;
 
   // create buffers for input matrix, T and L
   CmBufferUP *matrixBuf;
-  cm_result_check(device->CreateBufferUP(size * sizeof(unsigned int), (void*) k2treeMatrix, matrixBuf));
+  cm_result_check(device->CreateBufferUP(size * sizeof(unsigned int), (void*)k2treeMatrix, matrixBuf));
   //cm_result_check(inBuf->WriteSurface((const unsigned char*)k2treeMatrix, NULL));
 
   CmBuffer *LBuf;
   cm_result_check(device->CreateBuffer(Lsize * sizeof(unsigned int), LBuf));
   CmBuffer **TBuf;
   TBuf = (CmBuffer **)CM_ALIGNED_MALLOC(iterations + 1 * sizeof(CmBuffer *), 0x1000);
-  
+
   for (int i = 0; i <= iterations; i++) {
     cm_result_check(device->CreateBuffer(Tsizes[i] * sizeof(unsigned int), TBuf[i]));
   }
@@ -332,7 +334,7 @@ void K2treeConstructionTest(unsigned int size, string filename) {
   //CmThreadSpace *thread_space = nullptr;
   //cm_result_check(device->CreateThreadSpace(width, height, thread_space));
 
-  // Creates a task queue.	
+  // Creates a task queue.
   // The CmQueue is an in-order queue. Tasks get executed according to the
   // order they are enqueued. The next task does not start execution until the
   // current task finishes.
@@ -340,7 +342,7 @@ void K2treeConstructionTest(unsigned int size, string filename) {
   CmQueue *cmd_queue = nullptr;
   cm_result_check(device->CreateQueue(cmd_queue));
 
-  
+
   cm_result_check(last_levels_kernel->SetThreadCount(total_threads));
   cm_result_check(last_levels_kernel->SetKernelArg(0, sizeof(SurfaceIndex), input_idx));
   cm_result_check(last_levels_kernel->SetKernelArg(1, sizeof(SurfaceIndex), L_idx));
@@ -356,13 +358,13 @@ void K2treeConstructionTest(unsigned int size, string filename) {
     }
   }
 
-  int numThreads = total_threads/K2_ENTRIES;
+  int numThreads = total_threads / K2_ENTRIES;
   for (int i = 1; i <= iterations; i++) { // only call GPU mid_levels kernel when we have enough work to offload
-    cm_result_check(mid_levels_kernel[i-1]->SetThreadCount(numThreads));
-    cm_result_check(mid_levels_kernel[i-1]->SetKernelArg(0, sizeof(SurfaceIndex), input_idx));
-    cm_result_check(mid_levels_kernel[i-1]->SetKernelArg(1, sizeof(SurfaceIndex), T_idx[i]));
+    cm_result_check(mid_levels_kernel[i - 1]->SetThreadCount(numThreads));
+    cm_result_check(mid_levels_kernel[i - 1]->SetKernelArg(0, sizeof(SurfaceIndex), input_idx));
+    cm_result_check(mid_levels_kernel[i - 1]->SetKernelArg(1, sizeof(SurfaceIndex), T_idx[i]));
     int nt = sqrt(numThreads);
-    cm_result_check(mid_levels_kernel[i-1]->SetKernelArg(2, sizeof(nt), &nt));
+    cm_result_check(mid_levels_kernel[i - 1]->SetKernelArg(2, sizeof(nt), &nt));
 
     tid = 0;
     for (int x = 0; x < sqrt(numThreads); x++) { // set threads' (x,y)
@@ -382,12 +384,12 @@ void K2treeConstructionTest(unsigned int size, string filename) {
   cm_result_check(device->CreateTask(last_levels_task));
   CmTask **mid_levels_tasks = nullptr;
   mid_levels_tasks = (CmTask **)CM_ALIGNED_MALLOC(iterations * sizeof(CmTask *), 0x1000);
-  for(int i = 0; i < iterations; i++)
+  for (int i = 0; i < iterations; i++)
     cm_result_check(device->CreateTask(mid_levels_tasks[i]));
 
   // Adds a CmKernel pointer to CmTask.
   cm_result_check(last_levels_task->AddKernel(last_levels_kernel));
-  for(int i = 0; i < iterations; i++)
+  for (int i = 0; i < iterations; i++)
     cm_result_check(mid_levels_tasks[i]->AddKernel(mid_levels_kernel[i]));
 
   std::cout << "K2tree Construction test Start..." << endl;
@@ -409,8 +411,8 @@ void K2treeConstructionTest(unsigned int size, string filename) {
   // we don't call kernel to compute prefix sum. intead of, CPU simply performs the job
   cm_result_check(cmd_queue->Enqueue(last_levels_task, event));
   cm_result_check(event->WaitForTaskFinished(time_out));
-   
-  cm_result_check(LBuf->ReadSurface((unsigned char *) Lout, event));
+
+  cm_result_check(LBuf->ReadSurface((unsigned char *)Lout, event));
   /*
   cout << "L = ";
   for (int i = 0; i < Lsize; i++) {
@@ -420,21 +422,21 @@ void K2treeConstructionTest(unsigned int size, string filename) {
   */
   int bit_idx = 0;
   uint8_t offset = 0;
-  for (int i = 0; i < Lsize; i+=4) {
+  for (int i = 0; i < Lsize; i += 4) {
     if (Lout[i] > 0) {
-        offset = bit_idx % 64;
-        uint64_t x = Lout[i + 1];
-        x |= ((uint64_t)Lout[i + 2]) << 32;
-        write_int(&L[bit_idx/64], x, offset, Lout[i]);
-        bit_idx += Lout[i];
+      offset = bit_idx % 64;
+      uint64_t x = Lout[i + 1];
+      x |= ((uint64_t)Lout[i + 2]) << 32;
+      write_int(&L[bit_idx / 64], x, offset, Lout[i]);
+      bit_idx += Lout[i];
     }
   }
-  
+
   cm_result_check(TBuf[0]->ReadSurface((unsigned char *)Touts[0], event));
 
   for (int i = 1; i <= iterations; i++) { // 256 elems is the minimum to dispatch 2nd kernel
     CmEvent *event2 = nullptr;
-    cm_result_check(cmd_queue->Enqueue(mid_levels_tasks[i-1], event2));
+    cm_result_check(cmd_queue->Enqueue(mid_levels_tasks[i - 1], event2));
     cm_result_check(event2->WaitForTaskFinished(time_out));
     cm_result_check(TBuf[i]->ReadSurface((unsigned char *)Touts[i], event2));
   }
@@ -455,7 +457,7 @@ void K2treeConstructionTest(unsigned int size, string filename) {
   }
 
   clock_t end = clock(); // end timer
-  /*
+
   cout << "compact L = ";
   for (int i = 0; i < size / 64 && L[i] != 0; i++) {
     cout << L[i] << " ";
@@ -467,13 +469,13 @@ void K2treeConstructionTest(unsigned int size, string filename) {
     cout << T[i] << " ";
   }
   cout << endl;
-  */
+
   std::cout << endl;
   std::cout << "== GPU output begins ==" << endl << endl;
   device->FlushPrintBuffer();
   std::cout << endl << "==  GPU output ends  ==" << endl;
   std::cout << " GPU Prefix Time = " << end - start << " msec " << endl;
-  
+
   // Destroys the CmDevice.
   // Also destroys surfaces, kernels, tasks, thread spaces, and queues that
   // were created using this device instance that have not explicitly been
@@ -490,12 +492,12 @@ void K2treeConstructionTest(unsigned int size, string filename) {
   CM_ALIGNED_FREE(L);
   CM_ALIGNED_FREE(TBuf);
   CM_ALIGNED_FREE(T_idx);
-  CM_ALIGNED_FREE(mid_levels_kernel); 
+  CM_ALIGNED_FREE(mid_levels_kernel);
   CM_ALIGNED_FREE(mid_levels_tasks);
 }
 
 
-void K2treeQueries(unsigned k, unsigned size, unsigned numThreads, 
+void K2treeQueries(unsigned k, unsigned size, unsigned numThreads,
   string T_filename, string L_filename, string T_rank_filename, unsigned height, unsigned t_size, unsigned l_size) {
 
   std::vector<uint32_t> T, L, T_rank;
@@ -512,7 +514,7 @@ void K2treeQueries(unsigned k, unsigned size, unsigned numThreads,
     exit(1);
   }
 
-  
+
 
   // Creates a CmDevice from scratch.
   // Param device: pointer to the CmDevice object.
@@ -571,7 +573,7 @@ void K2treeQueries(unsigned k, unsigned size, unsigned numThreads,
   cm_result_check(LBuf->GetIndex(L_idx));
   SurfaceIndex *T_rank_idx = nullptr;
   cm_result_check(T_rankBuf->GetIndex(T_rank_idx));
-  
+
   //SurfaceIndex *output_idx = nullptr;
   //cm_result_check(outBuf->GetIndex(output_idx));
 
@@ -583,7 +585,7 @@ void K2treeQueries(unsigned k, unsigned size, unsigned numThreads,
   //CmThreadSpace *thread_space = nullptr;
   //cm_result_check(device->CreateThreadSpace(width, height, thread_space));
 
-  // Creates a task queue.	
+  // Creates a task queue.
   // The CmQueue is an in-order queue. Tasks get executed according to the
   // order they are enqueued. The next task does not start execution until the
   // current task finishes.
@@ -614,16 +616,16 @@ void K2treeQueries(unsigned k, unsigned size, unsigned numThreads,
   cm_result_check(range_kernel->SetKernelArg(5, sizeof(uint32_t), &height));
   cm_result_check(neighbors_kernel->SetKernelArg(6, sizeof(uint32_t), &k));
   cm_result_check(range_kernel->SetKernelArg(6, sizeof(uint32_t), &k));
-  
+
 
   unsigned chunk = (size) / numThreads;
   for (unsigned i = 0; i < numThreads; i++) {
     unsigned start = chunk * i;
     unsigned end = chunk * i + chunk;
     cm_result_check(neighbors_kernel->SetThreadArg(i, 7, sizeof(start), &start));
-    
+
     cm_result_check(neighbors_kernel->SetThreadArg(i, 8, sizeof(end), &end));
-    
+
   }
   cm_result_check(range_kernel->SetKernelArg(7, sizeof(block), &block));
   cm_result_check(range_kernel->SetKernelArg(8, sizeof(block), &block));
@@ -672,7 +674,7 @@ void K2treeQueries(unsigned k, unsigned size, unsigned numThreads,
   * Kernel for Range query
   ****************************************************/
   device->InitPrintBuffer();
-  
+
   std::cout << "K2tree range test Start..." << endl;
 
   start = clock(); // start timer
@@ -708,8 +710,190 @@ void K2treeQueries(unsigned k, unsigned size, unsigned numThreads,
   cm_result_check(::DestroyCmDevice(device));
 }
 
+
+void K2treeConstructionFromEdges(unsigned int size, string filename) {
+
+
+  uint32_t *edges;
+  edges = (uint32_t*)CM_ALIGNED_MALLOC((size) * sizeof(uint32_t), 0x1000);
+
+  //set values
+  edges[0] = 1;
+  edges[1] = 18;
+  edges[2] = 19;
+  edges[3] = 20;
+  edges[4] = 22;
+  edges[5] = 23;
+  edges[6] = 25;
+  edges[7] = 41;
+  edges[8] = 42;
+  edges[9] = 48;
+  edges[10] = 52;
+  edges[11] = 53;
+  edges[12] = 54;
+  edges[13] = 65;
+  edges[14] = 65;
+  edges[15] = 65;
+  edges[16] = 65;
+  edges[17] = 65;
+  edges[18] = 65;
+  edges[19] = 65;
+  edges[20] = 65;
+  edges[21] = 65;
+  edges[22] = 65;
+  edges[23] = 65;
+  edges[24] = 65;
+  edges[25] = 65;
+  edges[26] = 65;
+  edges[27] = 65;
+  edges[28] = 65;
+  edges[29] = 65;
+  edges[30] = 65;
+  edges[31] = 65;
+
+  // Allocate space for final K2tree structures L and T
+  uint64_t *L;
+  L = (uint64_t*)CM_ALIGNED_MALLOC((size / 64) * sizeof(uint64_t), 0x1000);
+  memset(L, 0, sizeof(uint64_t) * (size / 64));
+  uint64_t *T;
+  T = (uint64_t*)CM_ALIGNED_MALLOC((size / 64) * sizeof(uint64_t), 0x1000);
+  memset(T, 0, sizeof(uint64_t) * (size / 64));
+  // determine how many threads we need for each iteration
+  unsigned int width, height; // thread space width and height
+  unsigned int total_threads = 1;
+  //width = total_threads / 2;
+  //height = total_threads / 2;
+
+
+  // Creates a CmDevice from scratch.
+  // Param device: pointer to the CmDevice object.
+  // Param version: CM API version supported by the runtime library.
+  CmDevice *device = nullptr;
+  unsigned int version = 0;
+  cm_result_check(::CreateCmDevice(device, version));
+  // The file linear_walker_genx.isa is generated when the kernels in the file
+  // linear_walker_genx.cpp are compiled by the CM compiler.
+  // Reads in the virtual ISA from "K2tree_genx.isa" to the code
+  // buffer.
+  std::string isa_code = cm::util::isa::loadFile("IndexBuilder_genx.isa");
+  if (isa_code.size() == 0) {
+    std::cout << "Error: empty ISA binary.\n";
+    exit(1);
+  }
+
+  // Creates a CmProgram object consisting of the kernels loaded from the code
+  // buffer.
+  // Param isa_code.data(): Pointer to the code buffer containing the virtual
+  // ISA.
+  // Param isa_code.size(): Size in bytes of the code buffer containing the
+  // virtual ISA.
+  CmProgram *program = nullptr;
+  cm_result_check(device->LoadProgram(const_cast<char*>(isa_code.data()),
+    isa_code.size(),
+    program));
+
+  // Last_levels kernel will generate L and last 3 levels of T
+  CmKernel *construction_edges_kernel = nullptr;
+  cm_result_check(device->CreateKernel(program,
+    CM_KERNEL_FUNCTION(cmk_construction_from_edges),
+    construction_edges_kernel));
+
+  std::cout << "# threads Kernel: " << total_threads << endl;
+
+  // create buffers for input matrix, T and L
+  CmBuffer *edgesBuf;
+  cm_result_check(device->CreateBuffer(size * sizeof(unsigned int), edgesBuf));
+  cm_result_check(edgesBuf->WriteSurface((const unsigned char*)edges, NULL));
+
+
+  // When a surface is created by the CmDevice a SurfaceIndex object is
+  // created. This object contains a unique index value that is mapped to the
+  // surface.
+  // Gets the input surface index.
+  SurfaceIndex *edges_idx = nullptr;
+  cm_result_check(edgesBuf->GetIndex(edges_idx));
+  ;
+
+  // Creates a CmThreadSpace object.
+  // There are two usage models for the thread space. One is to define the
+  // dependency between threads to run in the GPU. The other is to define a
+  // thread space where each thread can get a pair of coordinates during
+  // kernel execution. For this example, we use the latter usage model.
+  //CmThreadSpace *thread_space = nullptr;
+  //cm_result_check(device->CreateThreadSpace(width, height, thread_space));
+
+  // Creates a task queue.
+  // The CmQueue is an in-order queue. Tasks get executed according to the
+  // order they are enqueued. The next task does not start execution until the
+  // current task finishes.
+  device->InitPrintBuffer();
+  CmQueue *cmd_queue = nullptr;
+  cm_result_check(device->CreateQueue(cmd_queue));
+
+
+  cm_result_check(construction_edges_kernel->SetThreadCount(total_threads));
+  cm_result_check(construction_edges_kernel->SetKernelArg(0, sizeof(SurfaceIndex), edges_idx));
+  unsigned int temp = 0;
+  cm_result_check(construction_edges_kernel->SetKernelArg(1, sizeof(unsigned int), &temp));
+  cm_result_check(construction_edges_kernel->SetKernelArg(2, sizeof(unsigned int), &temp));
+  unsigned int temp2 = 64;
+  cm_result_check(construction_edges_kernel->SetKernelArg(3, sizeof(unsigned int), &temp2));
+
+
+
+  // Creates a CmTask object.
+  // The CmTask object is a container for CmKernel pointers. It is used to
+  // enqueue the kernels for execution.
+  CmTask *construction_edges_task = nullptr;
+  cm_result_check(device->CreateTask(construction_edges_task));
+
+  // Adds a CmKernel pointer to CmTask.
+  cm_result_check(construction_edges_task->AddKernel(construction_edges_kernel));
+
+  std::cout << "K2tree Construction test Start..." << endl;
+
+  clock_t start = clock(); // start timer
+
+
+                           // Launches the task on the GPU. Enqueue is a non-blocking call, i.e. the
+                           // function returns immediately without waiting for the GPU to start or
+                           // finish execution of the task. The runtime will query the HW status. If
+                           // the hardware is not busy, the runtime will submit the task to the
+                           // driver/HW; otherwise, the runtime will submit the task to the driver/HW
+                           // at another time.
+                           // An event, "sync_event", is created to track the status of the task.
+  CmEvent *event = nullptr;
+  unsigned long time_out = -1;
+
+  // For small input size, we only have a small number of threads
+  // we don't call kernel to compute prefix sum. intead of, CPU simply performs the job
+  cm_result_check(cmd_queue->Enqueue(construction_edges_task, event));
+  cm_result_check(event->WaitForTaskFinished(time_out));
+
+  clock_t end = clock(); // end timer
+
+
+  std::cout << endl;
+  std::cout << "== GPU output begins ==" << endl << endl;
+  device->FlushPrintBuffer();
+  std::cout << endl << "==  GPU output ends  ==" << endl;
+  std::cout << " GPU Prefix Time = " << end - start << " msec " << endl;
+
+  // Destroys the CmDevice.
+  // Also destroys surfaces, kernels, tasks, thread spaces, and queues that
+  // were created using this device instance that have not explicitly been
+  // destroyed by calling the respective destroy functions.
+
+  CM_ALIGNED_FREE(edges);
+  CM_ALIGNED_FREE(T);
+  CM_ALIGNED_FREE(L);
+}
+
+
+
 int main(int argc, char * argv[])
 {
+
   // This program dispatches several kernels for K2tree utilization:
   //   1. Bits test kernel: Tests bit vector operations on Gen.
   //bitsTest();
@@ -717,18 +901,19 @@ int main(int argc, char * argv[])
   //      from a binary matrix. Results are compared vs CPU version
   unsigned k = 2;
   unsigned numThreads = 1;
-  unsigned size = 128;
+  unsigned size = 16;
   unsigned p = 3;
-  unsigned height = 7;
+  unsigned height = 4;
   //unsigned t_size = 2784; unsigned l_size = 1912; // 128
   //unsigned t_size = 208112; unsigned l_size = 157864; // 1024
   unsigned t_size = 11477624; unsigned l_size = 7709184; // 8192
-  
-  K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
+
+  //K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
   //K2treeConstructionTest(size*size, "matrix16x16_original.txt");
   //K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
   //K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
-  //K2treeQueries(k, size, numThreads, "T_"+to_string(size)+"_"+to_string(p)+"_h_"+to_string(height)+".txt", 
+  //K2treeQueries(k, size, numThreads, "T_"+to_string(size)+"_"+to_string(p)+"_h_"+to_string(height)+".txt",
   //  "L_"+to_string(size)+"_"+to_string(p)+".txt", "T_rank_"+to_string(size)+"_"+to_string(p)+".txt", height, t_size, l_size);
+  K2treeConstructionFromEdges(32, "");
 
 }
