@@ -718,38 +718,38 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   edges = (uint32_t*)CM_ALIGNED_MALLOC((size) * sizeof(uint32_t), 0x1000);
 
   //set values
-  edges[0] = 1;
-  edges[1] = 18;
-  edges[2] = 19;
-  edges[3] = 20;
-  edges[4] = 22;
-  edges[5] = 23;
-  edges[6] = 25;
-  edges[7] = 41;
-  edges[8] = 42;
-  edges[9] = 48;
-  edges[10] = 52;
-  edges[11] = 53;
-  edges[12] = 54;
-  edges[13] = 65;
-  edges[14] = 65;
-  edges[15] = 65;
-  edges[16] = 65;
-  edges[17] = 65;
-  edges[18] = 65;
-  edges[19] = 65;
-  edges[20] = 65;
-  edges[21] = 65;
-  edges[22] = 65;
-  edges[23] = 65;
-  edges[24] = 65;
-  edges[25] = 65;
-  edges[26] = 65;
-  edges[27] = 65;
-  edges[28] = 65;
-  edges[29] = 65;
-  edges[30] = 65;
-  edges[31] = 65;
+  edges[0] = 6; // 1;
+  edges[1] = 7; // 18;
+  edges[2] = 10; // 19;
+  edges[3] = 11; // 20;
+  edges[4] = 18; // 22;
+  edges[5] = 30; // 23;
+  edges[6] = 55; // 25;
+  edges[7] = 62; // 41;
+  edges[8] = 73; // 42;
+  edges[9] = 98; // 48;
+  edges[10] = 104; // 52;
+  edges[11] = 146; // 53;
+  edges[12] = 148; // 54;
+  edges[13] = 150; // 0;
+  edges[14] = 0;
+  edges[15] = 0;
+  edges[16] = 0;
+  edges[17] = 0;
+  edges[18] = 0;
+  edges[19] = 0;
+  edges[20] = 0;
+  edges[21] = 0;
+  edges[22] = 0;
+  edges[23] = 0;
+  edges[24] = 0;
+  edges[25] = 0;
+  edges[26] = 0;
+  edges[27] = 0;
+  edges[28] = 0;
+  edges[29] = 0;
+  edges[30] = 0;
+  edges[31] = 0;
 
   // Allocate space for final K2tree structures L and T
   uint64_t *L;
@@ -834,10 +834,18 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   cm_result_check(construction_edges_kernel->SetThreadCount(total_threads));
   cm_result_check(construction_edges_kernel->SetKernelArg(0, sizeof(SurfaceIndex), edges_idx));
   unsigned int temp = 0;
-  cm_result_check(construction_edges_kernel->SetKernelArg(1, sizeof(unsigned int), &temp));
-  cm_result_check(construction_edges_kernel->SetKernelArg(2, sizeof(unsigned int), &temp));
-  unsigned int temp2 = 64;
-  cm_result_check(construction_edges_kernel->SetKernelArg(3, sizeof(unsigned int), &temp2));
+  
+  unsigned chunk = 13 / 2;
+  for (unsigned i = 0; i < total_threads; i++) {
+    unsigned start = chunk * i;
+    unsigned end = chunk * i + chunk;
+    cm_result_check(construction_edges_kernel->SetThreadArg(i, 1, sizeof(start), &start));
+
+    cm_result_check(construction_edges_kernel->SetThreadArg(i, 2, sizeof(start), &start));
+
+    cm_result_check(construction_edges_kernel->SetThreadArg(i, 3, sizeof(end), &end));
+
+  }
 
 
 

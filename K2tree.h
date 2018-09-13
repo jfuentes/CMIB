@@ -13,6 +13,11 @@
 
 #define MAX_INT 2147483647
 
+#define L_INDEX 0
+#define T2_INDEX 9
+#define T1_INDEX 12
+#define T0_INDEX 14
+
 
 const uint64_t lo_set[] = {
   0x0000000000000000ULL,

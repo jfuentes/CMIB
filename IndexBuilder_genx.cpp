@@ -356,7 +356,15 @@ template<typename ty, unsigned int size>
 inline _GENX_ void cmk_read(SurfaceIndex index, unsigned int offset, vector_ref<ty, size> v) {
 #pragma unroll
   for (unsigned int i = 0; i < size; i += 32) {
-    read(index, offset + (i) * sizeof(ty), v.template select<32, 1>(i));
+    read(DWALIGNED(index), offset + (i) * sizeof(ty), v.template select<32, 1>(i));
+  }
+}
+
+template<typename ty, unsigned int size>
+inline _GENX_ void cmk_write(SurfaceIndex index, unsigned int offset, vector_ref<ty, size> v) {
+#pragma unroll
+  for (unsigned int i = 0; i < size; i += 32) {
+    write(index, offset + i * sizeof(ty), v.template select<32, 1>(i));
   }
 }
 
@@ -592,22 +600,53 @@ static const uint PRECOMPUTED_SUM[256] = { 0, 0, 0, 16, 0, 256, 256, 528, 0, 409
 1126174720, 1412440080, 1126174720, 1412440320, 1412440320, 1698705936, 839909376, 1126236160, 1126236160, 1412562960, 1126236160, 1412563200, 1412563200,
 1698890256, 1126236160, 1412567040, 1412567040, 1698897936, 1412567040, 1698898176, 1698898176, 1985229328 };
 
+template<typename ty, unsigned int size>
+inline _GENX_ void write_int_tree(vector_ref<ty, size> tree, vector_ref<ushort, 2> indices,
+  uint x, uint len) {
+  vector<uint, 2> offsets = 0, widths, vals;
+  if (indices[1]) {
+    vals = x;
+    offsets[0] = indices[1] * 4;
+    widths[0] = 32 - offsets[0];
+    widths[1] = indices[1] * 4;
+    vals[1] >>= widths[0];
+    tree.select<2, 1>(indices[0]) = cm_bf_insert<uint>(widths, offsets, vals, tree.select<2, 1>(indices[0]));
+  }
+  else {
+    tree[indices[0]] = x;
+  }
+  indices[1] += len;
+  indices[0] += indices[1] / 8;
+  indices[1] %= 8;
+}
+
 _GENX_MAIN_ void cmk_construction_from_edges(SurfaceIndex input, uint offset_start, uint start, uint end) {
 
   uint total_elems = end - start;
-  vector<uint, 64> edges; // worst case, all vertices have links
+  vector<uint, 32> edges; // worst case, all vertices have links
   vector<uint, 32> shifts;
   vector<ushort, 32> mask;
-  vector<uint, 2> range; //cStart, cEnd
-  range[0] = start;
-  range[1] = start + 32;
+  vector<uint, 2> range, div; //cStart, cEnd
+
   uint i = 0, sum;
   uint cumSum = 0;
-  cmk_read<uint, 64>(input, offset_start, edges);
+  cmk_read<uint, 32>(input, offset_start << 2, edges);
+  range[0] = edges[0];
+  uint diff = 32 - (range[0] % 32);
+  range[1] = range[0] + diff;
 
-  vector<ushort, 32> L;
+  vector<uint, 16> tree = 0;
 
   vector<uint, 256> precomputed(PRECOMPUTED_SUM);
+
+  // L vector
+  vector<ushort, 256> L = 0; // Index = 0
+
+  // T vectors
+  vector<ushort, 64> T2 = 0; uint t2_idx = 0; // Index = 9
+  vector<ushort, 32> T1 = 0; uint t1_idx = 0; // Index = 12  (SZ should be 16)  ==== ERROR: cm_pack_mask of a vector<ushort, 16> ====
+  vector<ushort, 32> T0 = 0; uint t0_idx = 0; // Index = 14 (SZ should be 4)
+
 
   // check every submatrix
   // first submatrix
@@ -615,31 +654,150 @@ _GENX_MAIN_ void cmk_construction_from_edges(SurfaceIndex input, uint offset_sta
   vector<uint, 8> subsubvec, resultVec, precomputedMask;
   vector<ushort, 8> offsets(OFFSETS), width = 4, submask, subshifts;
 
-  for (uint submatrix = 0; submatrix < 2; submatrix++) {
+  ushort current8th = 0, l_idx = 0;
+
+  vector<uint, 2> widths = 0, offs = 0, vals;
+
+  // first block
+  subvec = edges.select<32, 1>(i);
+  mask = (subvec >= range[0]) & (subvec < range[1]);
+  if (mask.any()) {
+    t0_idx = subvec[0] / 64;
+    shifts = 1 << subvec;
+    subvec = 0;
+    subvec.merge(shifts, mask);
+    sum = cm_sum<uint>(subvec); // final result
+    i += cm_cbit(cm_pack_mask(mask));
+
+    // store L
+    // L - 32 bits
+    L.select<32, 1>(l_idx) = cm_unpack_mask<uint, 32>(sum);
+    l_idx += 32;
+    // store T
+    // T2 - 8 bits
+    subsubvec = sum;
+    resultVec = cm_bf_extract<uint>(width, offsets, subsubvec);
+    submask = (resultVec != 0);
+    T2.select<8, 1>(t2_idx) = submask;
+    t2_idx += 8;
+    // T1 - 2 bits
+    T1[t1_idx++] = (submask.select<4, 1>(0)).any();
+    T1[t1_idx++] = (submask.select<4, 1>(4)).any();
+
+    // T0 - 1 bit
+
+  }
+  range[0] += diff;
+  range[1] += 32;
+
+  // second and rest of the blocks
+  for (uint j = 0; j < 7; j++) {
+
     subvec = edges.select<32, 1>(i);
     mask = (subvec >= range[0]) & (subvec < range[1]);
     if (mask.any()) {
+      t0_idx = subvec[0] / 64;
       shifts = 1 << subvec;
       subvec = 0;
       subvec.merge(shifts, mask);
       sum = cm_sum<uint>(subvec); // final result
       i += cm_cbit(cm_pack_mask(mask));
 
+      // store L
+      // L - 32 bits
+      L.select<32, 1>(l_idx) = cm_unpack_mask<uint, 32>(sum);
+      l_idx += 32;
+      // store T
+      // T2 - 8 bits
       subsubvec = sum;
       resultVec = cm_bf_extract<uint>(width, offsets, subsubvec);
       submask = (resultVec != 0);
-      precomputedMask = precomputed[cm_pack_mask(submask)];
-      subshifts = cm_bf_extract<uint>(width, offsets, precomputedMask);
-      resultVec <<= (subshifts * 4);
-      sum = cm_sum<uint>(resultVec);
-      printf("compressed vec %d\n", sum);
+      T2.select<8, 1>(t2_idx) = submask;
+      t2_idx += 8;
+      // T1 - 2 bits
+      T1[t1_idx++] = (submask.select<4, 1>(0)).any();
+      T1[t1_idx++] = (submask.select<4, 1>(4)).any();
+
+      // T0 - 1 bit
+
     }
     range += 32;
-
   }
 
 
 
+  // compress vectors into bitstrings
+  // compress L
+  uint val;
+  vector<ushort, 2> L_indices = 0;
+  L_indices[0] = L_INDEX + 1;
+#pragma unroll
+  for (uint j = 0; j < 256; j += 32) {
+    val = cm_pack_mask(L.select<32, 1>(j));
+    if (!val)
+      continue;
+    subsubvec = val;
+    resultVec = cm_bf_extract<uint>(width, offsets, subsubvec);
+    submask = (resultVec != 0);
+    precomputedMask = precomputed[cm_pack_mask(submask)]; // compress 4-bit substrings with only 0's
+    subshifts = cm_bf_extract<uint>(width, offsets, precomputedMask);
+    resultVec <<= (subshifts * 4);
+    val = cm_sum<uint>(resultVec); // compress 32-bit string
+
+    // store into final tree;
+    write_int_tree<uint, 16>(tree, L_indices, val, cm_cbit(cm_pack_mask(submask)));
+  }
+  tree[L_INDEX] = L_indices[0] * L_indices[1] * 4;
+
+
+  // compress T2
+  vector<ushort, 2> T2_indices = 0;
+  T2_indices[0] = T2_INDEX + 1;
+#pragma unroll
+  for (uint j = 0; j < 64; j += 32) {
+    val = cm_pack_mask(T2.select<32, 1>(j));
+    if (!val)
+      continue;
+    subsubvec = val;
+    resultVec = cm_bf_extract<uint>(width, offsets, subsubvec);
+    submask = (resultVec != 0);
+    precomputedMask = precomputed[cm_pack_mask(submask)]; // compress 4-bit substrings with only 0's
+    subshifts = cm_bf_extract<uint>(width, offsets, precomputedMask);
+    resultVec <<= (subshifts * 4);
+    val = cm_sum<uint>(resultVec); // compress 32-bit string
+
+                                   // store into final tree;
+    write_int_tree<uint, 16>(tree, T2_indices, val, cm_cbit(cm_pack_mask(submask)));
+  }
+  tree[T2_INDEX] = (T2_indices[0] - T2_INDEX) * T2_indices[1] * 4;
+
+  // compress T1
+  vector<ushort, 2> T1_indices = 0;
+  T1_indices[0] = T1_INDEX + 1;
+  val = cm_pack_mask(T1);
+  if (val) {
+    subsubvec = val;
+    resultVec = cm_bf_extract<uint>(width, offsets, subsubvec);
+    submask = (resultVec != 0);
+    precomputedMask = precomputed[cm_pack_mask(submask)]; // compress 4-bit substrings with only 0's
+    subshifts = cm_bf_extract<uint>(width, offsets, precomputedMask);
+    resultVec <<= (subshifts * 4);
+    val = cm_sum<uint>(resultVec); // compress 32-bit string
+
+                                   // store into final tree;
+    write_int_tree<uint, 16>(tree, T1_indices, val, cm_cbit(cm_pack_mask(submask)));
+
+    tree[T1_INDEX] = (T1_indices[0] - T1_INDEX) * T1_indices[1] * 4;
+
+    // compress T0
+    val = cm_pack_mask(submask);
+    tree[T0_INDEX] = 4;
+    tree[T0_INDEX + 1] = val;
+  }
+
+  printf("tree [%u, %u, %u, %u, %u, %u, %u, %u ]\n", tree[0], tree[1], tree[2], tree[3], tree[4], tree[5], tree[6], tree[7]);
+  printf("tree [%u, %u, %u, %u, %u, %u, %u, %u ]\n", tree[8], tree[9], tree[10], tree[11], tree[12], tree[13], tree[14], tree[15]);
+  // write final result
 }
 
 // Stack structure used for keeping track of search path
