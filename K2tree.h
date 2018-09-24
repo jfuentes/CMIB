@@ -3,7 +3,7 @@
 #define DEBUG 0
 
 #define SIMD_SIZE 8
-#define MAX_TS_WIDTH 1024
+#define MAX_TS_WIDTH 512
 #define K2_VALUE 2
 #define K2_ENTRIES 64
 #define BLOCK_SZ 8 // ideally should be 16
