@@ -1063,7 +1063,7 @@ void cmk_radix_bucket(SurfaceIndex input, SurfaceIndex table,
   SurfaceIndex output, unsigned int bin0_cnt, unsigned int bin1_cnt,
   unsigned int bin2_cnt, unsigned int bin3_cnt, unsigned int n);
 
-#define LOG2_ELEMENTS 8
+#define LOG2_ELEMENTS 26
 //
 // validate radix_count result
 //
@@ -1181,7 +1181,8 @@ void validate_sorted_result(uint64_t expectOutputs[], uint64_t result[], unsigne
 void dumpElems(uint64_t elems[], unsigned int size){
   cout << "Elements: ";
   for(int i = 0; i < size; i++){
-    cout << elems[i] << ", ";
+    printf("%lu, ", elems[i] );
+
   }
   cout << std::endl;
 }
@@ -1329,7 +1330,7 @@ int radixSort(){
     // on the GPU.
     unsigned long time_out = -1;
     cm_result_check(event->WaitForTaskFinished(time_out));
-
+    //cm_result_check(device->FlushPrintBuffer());
     bool pass = true;
 #ifdef _DEBUG
     // validate bin count result
@@ -1389,9 +1390,12 @@ int radixSort(){
   cout << " Prefix Time = " << clock_prefix << " msec " << endl;
 
   validate_sorted_result(pExpectOutputs, pInputs, size);
+
+  //dumpElems(pExpectOutputs, size);
+  //dumpElems(pInputs, size);
   // Flushes the print buffer to stdout.
   // This function call will also clear/reset the print buffer.
-  cm_result_check(device->FlushPrintBuffer());
+  //cm_result_check(device->FlushPrintBuffer());
 
   // Destroys a CmTask object.
   // CmTask will be destroyed when CmDevice is destroyed.

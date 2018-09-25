@@ -1084,7 +1084,7 @@ _GENX_MAIN_ void cmk_radix_count(SurfaceIndex input, SurfaceIndex output, unsign
   // h_pos indicates which 256-element chunk the kernel is processing
   uint h_pos = get_thread_origin_x() + get_thread_origin_y()*MAX_TS_WIDTH;
   // byte offset of the data chunk
-  unsigned int offset = (h_pos * BASE_SZ) << 2;
+  unsigned int offset = (h_pos * BASE_SZ)  *sizeof(unsigned long long);
   // to take advantage of SIMD architecture, we process counting 32
   // elements as a batch rather than counting each element serially.
   // Here we create a 4x32 counters. Each time, 32 elements are read.
@@ -1103,6 +1103,7 @@ _GENX_MAIN_ void cmk_radix_count(SurfaceIndex input, SurfaceIndex output, unsign
     // read and process 32 elements each time
     vector<unsigned long long, 32> A;
     cmk_read<unsigned long long, 32, 16>(input, offset + i * sizeof(unsigned long long), A);
+    printf("thread %d read %lu %lu %lu %lu step %d\n", h_pos, A[0], A[1], A[2], A[3], sizeof(unsigned long long));
     // extract n-th and (n+1)-th bits out.
     // val is the bin number, data will be put. E.g., val[i] is bin # for A(i)
     vector<unsigned short, 32> val = (A & mask) >> n;
@@ -1155,7 +1156,7 @@ _GENX_MAIN_ void cmk_radix_bucket(
   // h_pos indicates which 256-element chunk the kernel is processing
   uint h_pos = get_thread_origin_x() + get_thread_origin_y()*MAX_TS_WIDTH;
   // byte offset of the data chunk
-  unsigned int offset = (h_pos * BASE_SZ) << 2;
+  unsigned int offset = (h_pos * BASE_SZ) * sizeof(unsigned long long);
 
   vector<unsigned int, BIN_NUM> prefix = 0;
   // loading PrefixSum[h_pos-1]
@@ -1265,12 +1266,15 @@ _GENX_MAIN_ void cmk_radix_bucket(
 
 
     // scatter write, 16-element each
-    vector<uint, 64> A_uint = A.format<uint>();
 
+    vector<uint, 64> A_uint = A.format<uint>();
+    
     write(output, 0, voff_ext.select<16, 1>(0), A_uint.select<16, 1>(0));
     write(output, 0, voff_ext.select<16, 1>(16), A_uint.select<16, 1>(16));
     write(output, 0, voff_ext.select<16, 1>(32), A_uint.select<16, 1>(32));
-    write(output, 0, voff_ext.select<16, 1>(48), A_uint.select<16, 1>(48));
+    write(output, 0, voff_ext.select<16, 1>(48), A_uint.select<16, 1>(48)); 
+
+
     //write(output, 0, voff.select<16, 1>(0), A.select<16, 1>(0));
     //write(output, 0, voff.select<16, 1>(16), A.select<16, 1>(16));
 
