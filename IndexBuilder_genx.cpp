@@ -353,6 +353,14 @@ inline _GENX_ void cmk_read(SurfaceIndex index, unsigned int offset, vector_ref<
   }
 }
 
+template<typename ty, unsigned int size, unsigned int chunk>
+inline _GENX_ void cmk_read(SurfaceIndex index, unsigned int offset, vector_ref<ty, size> v) {
+#pragma unroll
+  for (unsigned int i = 0; i < size; i += chunk) {
+    read(index, offset + (i) * sizeof(ty), v.template select<chunk, 1>(i));
+  }
+}
+
 template<typename ty, unsigned int size>
 inline _GENX_ void cmk_read(SurfaceIndex index, unsigned int offset, vector_ref<ty, size> v) {
 #pragma unroll
@@ -729,7 +737,7 @@ _GENX_MAIN_ void cmk_construction_from_edges(SurfaceIndex input, uint offset_sta
   range[0] += diff;
   range[1] += 32;
 
-  
+
 
   // second and rest of the blocks
   for (uint j = 0; j < 7; j++) {
@@ -1088,16 +1096,16 @@ _GENX_MAIN_ void cmk_radix_count(SurfaceIndex input, SurfaceIndex output, unsign
   // are in bin_cnt[]
   vector<unsigned int, BIN_NUM> bin_cnt;
   counters = 0;
-  unsigned int mask = 0x3 << n; // which 2 bits we want to extract
+  unsigned long long mask = 0x3 << n; // which 2 bits we want to extract
 
                                 //#pragma unroll
   for (int i = 0; i < BASE_SZ; i += 32) {
     // read and process 32 elements each time
-    vector<unsigned int, 32> A;
-    cmk_read<unsigned int, 32>(input, offset + i * sizeof(unsigned int), A);
+    vector<unsigned long long, 32> A;
+    cmk_read<unsigned long long, 32, 16>(input, offset + i * sizeof(unsigned long long), A);
     // extract n-th and (n+1)-th bits out.
     // val is the bin number, data will be put. E.g., val[i] is bin # for A(i)
-    vector<unsigned int, 32> val = (A & mask) >> n;
+    vector<unsigned short, 32> val = (A & mask) >> n;
     // row(0) is for bin0 for all 32 lanes.
     // merge operation to increase its own corresponding counters
     // val == 0 indicate which lanes have 0. Only those channels are
@@ -1158,7 +1166,7 @@ _GENX_MAIN_ void cmk_radix_bucket(
     read(table, ((h_pos - 1)*BIN_NUM) << 2, prefix);
   }
 
-  unsigned int mask = 0x3 << n;
+  unsigned long long mask = 0x3 << n;
   // the location where the next 32 elements can be put in each bin
   vector<unsigned int, BIN_NUM> next;
   next[0] = prefix[0];
@@ -1168,8 +1176,8 @@ _GENX_MAIN_ void cmk_radix_bucket(
 
   for (int i = 0; i < BASE_SZ; i += 32) {
     // read and process 32 elements at a time
-    vector<unsigned int, 32> A;
-    cmk_read<unsigned int, 32>(input, offset + i * sizeof(unsigned int), A);
+    vector<unsigned long long, 32> A;
+    cmk_read<unsigned long long, 32, 16>(input, offset + i * sizeof(unsigned long long), A);
     // calculate bin # for each element
     vector<unsigned short, 32> val = (A & mask) >> n;
     vector<unsigned int, 4> bitset;
@@ -1250,12 +1258,23 @@ _GENX_MAIN_ void cmk_radix_bucket(
     // add bin3 element offsets to the bin3-batch-start
     voff.merge(idx.row(3) + next(3) - 1, val == 3);
 
+    vector< uint, 64> voff_ext;
+    voff *= 2;
+    voff_ext.select<32, 2>(0) = voff;
+    voff_ext.select<32,2>(1) = voff + 1;
+
+
     // scatter write, 16-element each
-    write(output, 0, voff.select<16, 1>(0), A.select<16, 1>(0));
-    write(output, 0, voff.select<16, 1>(16), A.select<16, 1>(16));
+    vector<uint, 64> A_uint = A.format<uint>();
+
+    write(output, 0, voff_ext.select<16, 1>(0), A_uint.select<16, 1>(0));
+    write(output, 0, voff_ext.select<16, 1>(16), A_uint.select<16, 1>(16));
+    write(output, 0, voff_ext.select<16, 1>(32), A_uint.select<16, 1>(32));
+    write(output, 0, voff_ext.select<16, 1>(48), A_uint.select<16, 1>(48));
+    //write(output, 0, voff.select<16, 1>(0), A.select<16, 1>(0));
+    //write(output, 0, voff.select<16, 1>(16), A.select<16, 1>(16));
 
     // update the next pointers, move onto the next 32 element
     next += n_elems;
   }
 }
-

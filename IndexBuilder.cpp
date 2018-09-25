@@ -13,7 +13,7 @@
 
 #include "cm_rt.h"
 
-#include "../../compiler/include/cm/cm_vm.h"
+//#include "../../compiler/include/cm/cm_vm.h"
 
 #include <time.h>
 #include <vector>
@@ -838,7 +838,7 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   cm_result_check(construction_edges_kernel->SetThreadCount(total_threads));
   cm_result_check(construction_edges_kernel->SetKernelArg(0, sizeof(SurfaceIndex), edges_idx));
   unsigned int temp = 0;
-  
+
   unsigned chunk = 13 / 2;
   for (unsigned i = 0; i < total_threads; i++) {
     unsigned start = chunk * i;
@@ -910,8 +910,8 @@ void generateMortonNumbers() {
   edges = (uint32_t*)CM_ALIGNED_MALLOC((numEdges) * sizeof(uint32_t), 0x1000);
   memset(edges, 0, sizeof(uint32_t) * numEdges);
     //set values
-  edges[0] = 152; 
-  edges[1] = 43; 
+  edges[0] = 152;
+  edges[1] = 43;
   edges[2] = 0xffffffff;
 
   // Allocate space for output
@@ -1063,16 +1063,16 @@ void cmk_radix_bucket(SurfaceIndex input, SurfaceIndex table,
   SurfaceIndex output, unsigned int bin0_cnt, unsigned int bin1_cnt,
   unsigned int bin2_cnt, unsigned int bin3_cnt, unsigned int n);
 
-#define LOG2_ELEMENTS 23
+#define LOG2_ELEMENTS 8
 //
 // validate radix_count result
 //
-bool validate_count(unsigned int inputs[], unsigned int result[],
+bool validate_count(uint64_t inputs[], unsigned int result[],
   unsigned int total_threads, unsigned int size,
   unsigned n) {
   unsigned int binCount[4];
   binCount[0] = binCount[1] = binCount[2] = binCount[3] = 0;
-  unsigned int mask = 0x3 << n;
+  unsigned long long mask = 0x3 << n;
   for (int i = 0; i < size; i++) {
     binCount[(inputs[i] & mask) >> n]++;
   }
@@ -1086,7 +1086,7 @@ bool validate_count(unsigned int inputs[], unsigned int result[],
     total_cnt[3] += result[i*BIN_NUM + 3];
   }
 
-  cout << "Expected result " <<
+  cout << "Expected result  for n=" << n << ": " <<
     binCount[0] << " " <<
     binCount[1] << " " <<
     binCount[2] << " " <<
@@ -1104,8 +1104,8 @@ bool validate_count(unsigned int inputs[], unsigned int result[],
 //
 // validate bin's contents
 //
-bool validate_bin(unsigned int outputs[], unsigned int binCount[], unsigned int n) {
-  unsigned int mask = 0x3 << n;
+bool validate_bin(uint64_t outputs[], unsigned int binCount[], unsigned int n) {
+  unsigned long long mask = 0x3 << n;
   int idx = 0;
   for (int i = 0; i < binCount[0]; i++, idx++) {
     if (((outputs[idx] & mask) >> n) != 0) {
@@ -1161,7 +1161,7 @@ void  compute_prefixsum(unsigned int prefixSum[], unsigned int total_threads) {
   clock_prefix += end - start;
 }
 
-void validate_sorted_result(unsigned int expectOutputs[], unsigned int result[], unsigned int size) {
+void validate_sorted_result(uint64_t expectOutputs[], uint64_t result[], unsigned int size) {
   clock_t start = clock(); // start timer
   std::sort(expectOutputs, expectOutputs + size);
   clock_t end = clock(); // end timer
@@ -1178,26 +1178,36 @@ void validate_sorted_result(unsigned int expectOutputs[], unsigned int result[],
   cout << "Radix Sort " << (pass ? "PASSED" : "FAILED") << endl;
 }
 
+void dumpElems(uint64_t elems[], unsigned int size){
+  cout << "Elements: ";
+  for(int i = 0; i < size; i++){
+    cout << elems[i] << ", ";
+  }
+  cout << std::endl;
+}
+
 int radixSort(){
-  unsigned int * pInputs;
-  unsigned int * pActualOutputs;
-  unsigned int * pExpectOutputs;
+  uint64_t * pInputs;
+  uint64_t * pActualOutputs;
+  uint64_t * pExpectOutputs;
   unsigned int * prefixSum;
 
   unsigned int size = 1 << LOG2_ELEMENTS;
   // prepare intput data
-  pInputs = (unsigned int*)CM_ALIGNED_MALLOC(size * sizeof(unsigned int), 0x1000);
+  pInputs = (uint64_t*)CM_ALIGNED_MALLOC(size * sizeof(uint64_t), 0x1000);
   for (unsigned int i = 0; i < size; ++i) {
-    pInputs[i] = (rand() << 16) + rand();
+    pInputs[i] = (rand() << 32) + rand();
     // pInputs_[i] = rand() % (1 << 15);
   }
   // prepare output buffer for sorted result
-  pActualOutputs = (unsigned int*)CM_ALIGNED_MALLOC(size * sizeof(unsigned int), 0x1000);
-  memset(pActualOutputs, 0, sizeof(unsigned int) * size);
+  pActualOutputs = (uint64_t*)CM_ALIGNED_MALLOC(size * sizeof(uint64_t), 0x1000);
+  memset(pActualOutputs, 0, sizeof(uint64_t) * size);
   // prepare validation result. call std::sort to get the expected result
-  pExpectOutputs = new unsigned int[size];
-  memcpy(pExpectOutputs, pInputs, sizeof(unsigned int) * size);
+  pExpectOutputs = new uint64_t[size];
+  memcpy(pExpectOutputs, pInputs, sizeof(uint64_t) * size);
   std::sort(pExpectOutputs, pExpectOutputs + size);
+  //dumpElems(pInputs, size);
+  //dumpElems(pExpectOutputs, size);
 
   // Creates a CmDevice
   // Param device: pointer to the CmDevice object.
@@ -1246,9 +1256,9 @@ int radixSort(){
   // create buffers for input and output and prefix sum table
   // in system-memory, zero-copy for GPU-CPU sharing.
   CmBufferUP *inBuf;
-  cm_result_check(device->CreateBufferUP(size * sizeof(unsigned int), (void *)pInputs, inBuf));
+  cm_result_check(device->CreateBufferUP(size * sizeof(uint64_t), (void *)pInputs, inBuf));
   CmBufferUP *outBuf;
-  cm_result_check(device->CreateBufferUP(size * sizeof(unsigned int), (void *)pActualOutputs, outBuf));
+  cm_result_check(device->CreateBufferUP(size * sizeof(uint64_t), (void *)pActualOutputs, outBuf));
   // prepare prefixSum table
   prefixSum = (unsigned int*)CM_ALIGNED_MALLOC(total_threads*BIN_NUM * sizeof(unsigned int), 0x1000);
   CmBufferUP *prefixBuf;
@@ -1292,7 +1302,7 @@ int radixSort(){
   clock_t start = clock(); // start timer
 
                            // 16 iterations for sorting 32-bit unsigned numbers, 2-bit each iteration
-  for (int n = 0; n <= 32; n += 2) {
+  for (int n = 0; n <= 64; n += N_BITS) {
     // cmk_radix_count(SurfaceIndex input, SurfaceIndex prefix, unsigned int n).
     // set argument for radix_count
     // determine even or odd iteration. alternate in and out buffers
@@ -1370,8 +1380,9 @@ int radixSort(){
 #ifdef _DEBUG
     pass = validate_bin(even_iteration ? pActualOutputs : pInputs, binCount, n);
     cout << "Bucket " << (pass ? "=> PASSED" : "=> FAILED") << endl << endl;
+    //dumpElems(pActualOutputs, size);
 #endif
-
+  //  break;
   }
   clock_t end = clock(); // end timer
   cout << " Sorting Time = " << end - start << " msec " << endl;
@@ -1428,8 +1439,8 @@ int main(int argc, char * argv[])
   //K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
   //K2treeQueries(k, size, numThreads, "T_"+to_string(size)+"_"+to_string(p)+"_h_"+to_string(height)+".txt",
   //  "L_"+to_string(size)+"_"+to_string(p)+".txt", "T_rank_"+to_string(size)+"_"+to_string(p)+".txt", height, t_size, l_size);
-  K2treeConstructionFromEdges(32, "");
+  //K2treeConstructionFromEdges(32, "");
 
   //generateMortonNumbers();
-  //radixSort();
+  radixSort();
 }
