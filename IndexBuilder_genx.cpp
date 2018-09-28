@@ -5,6 +5,18 @@
 #include "bits.h"
 #include "radixsort.h"
 
+/*
+Returns the global id of the current thread taking
+into account the workgroup id and size
+*/
+inline uint GetGlobalId() {
+#ifdef CMRT_EMU
+	return get_thread_origin_x();
+#else
+	return (cm_local_id(0) + cm_group_id(0) * WG_SIZE);
+#endif
+}
+
 inline _GENX_ uint32_t cnt_naive(vector<uint32_t, SIMD_SIZE> x)
 {
   uint32_t res = 0;
@@ -376,7 +388,7 @@ inline _GENX_ void cmk_write(SurfaceIndex index, unsigned int offset, vector_ref
 template<typename ty, unsigned int size, unsigned int chunk>
 inline _GENX_ void cmk_write(SurfaceIndex index, unsigned int offset, vector_ref<ty, size> v) {
 #pragma unroll
-  for (unsigned int i = 0; i < size; i += 16) {
+  for (unsigned int i = 0; i < size; i += chunk) {
     write(index, offset + i * sizeof(ty), v.template select<chunk, 1>(i));
   }
 }
@@ -592,36 +604,35 @@ static const ushort OFFSETS_X[16] = { 0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 4
 static const ushort OFFSETS_Y[16] = { 2, 6, 10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62 };
 static const ushort SHIFTS[16] = { 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30 };
 
-_GENX_MAIN_ void cmk_generate_morton_numbers(SurfaceIndex input, SurfaceIndex ouput) {
-
-  vector<uint, 16> widths = 2;
-  vector<uint, 16> offsetsX(OFFSETS_X), offsetsY(OFFSETS_Y), shifts(SHIFTS);
-  vector<uint, 64> val;
+_GENX_MAIN_ void cmk_generate_morton_numbers(SurfaceIndex vertices_x, SurfaceIndex vertices_y, SurfaceIndex ouput, uint numEdges) {
+  vector<uint, 32> x, y;
   vector<uint, 32> src = 0;
-  vector<unsigned long long, 32> result = 0;
+  
 
-  vector<unsigned long long, 32> aux = 0;
-  unsigned long long mask = 3;
+  uint64_t mask = 3;
+  uint global_id = get_thread_origin_x();
+  uint edgesPerThread = numEdges / GPU_THREADS;
+  uint threadOffset = edgesPerThread * global_id;
 
-    cmk_read<uint, 64>(input, 0, val);
+  
+  //printf("thread %d reading at %d total %d each with %d\n", global_id, (edgesPerThread* global_id), numEdges, edgesPerThread);
+  for (uint currentChunk = 0; currentChunk < edgesPerThread; currentChunk += 32) {
+	  cmk_read<uint, 32>(vertices_x, (threadOffset + currentChunk) << 2, x);
+	  cmk_read<uint, 32>(vertices_y, (threadOffset + currentChunk)<< 2, y);
+	  vector<uint64_t, 32> result = 0;
+	  for (uint k = 0; k < 64; k += 4) { // x
+		  result.select<32, 1>(0) |= cm_bf_insert<uint64_t>(2, k, x.select<32, 1>(0), src);
+		  x.select<32, 1>(0) >>= 2;
+	  }
 
-    for (uint j = 0; j < 32; j += 32) {
-      for (uint k = 0; k < 64; k+=4) { // x
-        result.select<32, 1>(0) |= cm_bf_insert<unsigned long long>(2, k, val.select<32, 2>(j), src);
-        val.select<32, 2>(j) >>= 2;
-      }
-    }
+	  for (uint k = 2; k < 64; k += 4) { // y
+	       result.select<32, 1>(0) |= cm_bf_insert<uint64_t>(2, k, y.select<32, 1>(0), src);
+		   y.select<32, 1>(0) >>= 2;
+	  }
+	  
 
-
-    for (uint j = 1; j < 64; j += 32) {
-      for (uint k = 2; k < 32; k += 4) { // y
-        result.select<32, 1>(0) |= cm_bf_insert<unsigned long long>(2, k, val.select<32, 2>(j), src);
-        val.select<32, 2>(j) >>= 2;
-      }
-    }
-
-
-    cmk_write<unsigned long long, 32, 16>(ouput, 0, result);
+	  cmk_write<uint64_t, 32, 16>(ouput, (threadOffset +currentChunk) * sizeof(uint64_t), result);
+  }
 }
 
 
@@ -1125,17 +1136,7 @@ inline vector<T, 128> PrefixSumIn(vector<T, 128> in) {
 	return r;
 }
 
-/*
-Returns the global id of the current thread taking
-into account the workgroup id and size
-*/
-inline uint GetGlobalId() {
-#ifdef CMRT_EMU
-	return get_thread_origin_x();
-#else
-	return (cm_local_id(0) + cm_group_id(0) * WG_SIZE);
-#endif
-}
+
 
 const ushort RADIX_INDEX[RADIX_SIZE] = { 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 };
 

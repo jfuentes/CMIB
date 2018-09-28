@@ -922,18 +922,18 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   CM_ALIGNED_FREE(L);
 }
 
-void generateMortonNumbers() {
+void generateMortonNumbers(uint32_t size, std::vector<uint32_t> &vertices_x, std::vector<uint32_t> &vertices_y) {
 
-  int numEdges = 64;
-  int numMortonNumbers = numEdges / 2;
+  unsigned int numEdges = size;
+  unsigned int numMortonNumbers = size;
 
-  uint32_t *edges;
-  edges = (uint32_t*)CM_ALIGNED_MALLOC((numEdges) * sizeof(uint32_t), 0x1000);
-  memset(edges, 0, sizeof(uint32_t) * numEdges);
-    //set values
-  edges[0] = 152;
-  edges[1] = 43;
-  edges[2] = 0xffffffff;
+  uint32_t *edges_x;
+  edges_x = (uint32_t*)CM_ALIGNED_MALLOC((numEdges) * sizeof(uint32_t), 0x1000);
+  //memset(edges_x, 0, sizeof(uint32_t) * numEdges);
+
+  uint32_t *edges_y;
+  edges_y = (uint32_t*)CM_ALIGNED_MALLOC((numEdges) * sizeof(uint32_t), 0x1000);
+
 
   // Allocate space for output
   uint64_t *mortonNumbers;
@@ -942,9 +942,10 @@ void generateMortonNumbers() {
 
   // determine how many threads we need for each iteration
   unsigned int width, height; // thread space width and height
-  unsigned int total_threads = 1;
-  //width = total_threads / 2;
-  //height = total_threads / 2;
+  unsigned int total_threads = GPU_THREADS;
+  width = total_threads;
+  height = 1;
+
 
 
   // Creates a CmDevice from scratch.
@@ -983,11 +984,14 @@ void generateMortonNumbers() {
   std::cout << "# threads Kernel: " << total_threads << endl;
 
   // create buffers for input/output
-  CmBuffer *edgesBuf;
-  cm_result_check(device->CreateBuffer(numEdges * sizeof(unsigned int), edgesBuf));
-  cm_result_check(edgesBuf->WriteSurface((const unsigned char*)edges, NULL));
+  CmBuffer *edgesXBuf;
+  cm_result_check(device->CreateBuffer(numEdges * sizeof(uint32_t), edgesXBuf));
+  cm_result_check(edgesXBuf->WriteSurface((const unsigned char*)vertices_x.data(), NULL));
+  CmBuffer *edgesYBuf;
+  cm_result_check(device->CreateBuffer(numEdges * sizeof(uint32_t), edgesYBuf));
+  cm_result_check(edgesYBuf->WriteSurface((const unsigned char*)vertices_y.data(), NULL));
   CmBuffer *mortonBuf;
-  cm_result_check(device->CreateBuffer(numMortonNumbers * sizeof(unsigned int), mortonBuf));
+  cm_result_check(device->CreateBuffer(numMortonNumbers * sizeof(uint64_t), mortonBuf));
 
 
 
@@ -995,8 +999,10 @@ void generateMortonNumbers() {
   // created. This object contains a unique index value that is mapped to the
   // surface.
   // Gets the input surface index.
-  SurfaceIndex *edges_idx = nullptr;
-  cm_result_check(edgesBuf->GetIndex(edges_idx));
+  SurfaceIndex *edges_x_idx = nullptr;
+  cm_result_check(edgesXBuf->GetIndex(edges_x_idx));
+  SurfaceIndex *edges_y_idx = nullptr;
+  cm_result_check(edgesYBuf->GetIndex(edges_y_idx));
   SurfaceIndex *morton_idx = nullptr;
   cm_result_check(mortonBuf->GetIndex(morton_idx));
   ;
@@ -1006,8 +1012,8 @@ void generateMortonNumbers() {
   // dependency between threads to run in the GPU. The other is to define a
   // thread space where each thread can get a pair of coordinates during
   // kernel execution. For this example, we use the latter usage model.
-  //CmThreadSpace *thread_space = nullptr;
-  //cm_result_check(device->CreateThreadSpace(width, height, thread_space));
+  CmThreadSpace *thread_space = nullptr;
+  cm_result_check(device->CreateThreadSpace(width, height, thread_space));
 
   // Creates a task queue.
   // The CmQueue is an in-order queue. Tasks get executed according to the
@@ -1019,9 +1025,10 @@ void generateMortonNumbers() {
 
 
   cm_result_check(morton_kernel->SetThreadCount(total_threads));
-  cm_result_check(morton_kernel->SetKernelArg(0, sizeof(SurfaceIndex), edges_idx));
-  cm_result_check(morton_kernel->SetKernelArg(1, sizeof(SurfaceIndex), morton_idx));
-
+  cm_result_check(morton_kernel->SetKernelArg(0, sizeof(SurfaceIndex), edges_x_idx));
+  cm_result_check(morton_kernel->SetKernelArg(1, sizeof(SurfaceIndex), edges_y_idx));
+  cm_result_check(morton_kernel->SetKernelArg(2, sizeof(SurfaceIndex), morton_idx)); 
+  cm_result_check(morton_kernel->SetKernelArg(3, sizeof(uint32_t), &numEdges));
 
 
 
@@ -1051,7 +1058,7 @@ void generateMortonNumbers() {
 
   // For small input size, we only have a small number of threads
   // we don't call kernel to compute prefix sum. intead of, CPU simply performs the job
-  cm_result_check(cmd_queue->Enqueue(construction_edges_task, event));
+  cm_result_check(cmd_queue->Enqueue(construction_edges_task, event, thread_space));
   cm_result_check(event->WaitForTaskFinished(time_out));
 
   clock_t end = clock(); // end timer
@@ -1068,13 +1075,14 @@ void generateMortonNumbers() {
   std::cout << "Morton number " << mortonNumbers[1] << std::endl;
   std::cout << "Morton number " << mortonNumbers[2] << std::endl;
   std::cout << "Morton number " << mortonNumbers[3] << std::endl;
-
+  std::cout << "edge  (" << vertices_x[1000000] << ", " << vertices_y[1000000] << ") = " << mortonNumbers[1000000] << std::endl;
   // Destroys the CmDevice.
   // Also destroys surfaces, kernels, tasks, thread spaces, and queues that
   // were created using this device instance that have not explicitly been
   // destroyed by calling the respective destroy functions.
 
-  CM_ALIGNED_FREE(edges);
+  CM_ALIGNED_FREE(edges_x);
+  CM_ALIGNED_FREE(edges_y);
   CM_ALIGNED_FREE(mortonNumbers);
 
 }
@@ -1329,6 +1337,41 @@ int radixSort() {
 	return 0;
 }
 
+// load edges (x,y) from ARC file
+bool loadEdges(std::string filename, std::vector<uint32_t> &vertices_x, std::vector<uint32_t> &vertices_y) {
+
+		ifstream file(filename);
+		if (!file.good())
+			return false;
+		uint32_t x, y, edges = 0;
+		std::string line;
+		while (std::getline(file, line)) {
+			if (line[0] == '#') // # character
+				continue;
+			edges++;
+		}
+		file.clear();
+		file.seekg(0, std::ios::beg);
+
+		vertices_x.resize(edges);
+		vertices_y.resize(edges);
+
+		// Read edges
+		uint32_t i = 0;
+		while (std::getline(file, line)){
+			if (line[0] == '#') // # character
+				continue;
+			std::istringstream ss(line);
+			if (!(ss >> x >> y))
+				return false;
+			vertices_x[i] = x;
+			vertices_y[i++] = y;
+		}
+		file.close();
+		return true;
+
+}
+
 
 int main(int argc, char * argv[])
 {
@@ -1347,16 +1390,25 @@ int main(int argc, char * argv[])
   //unsigned t_size = 208112; unsigned l_size = 157864; // 1024
   unsigned t_size = 11477624; unsigned l_size = 7709184; // 8192
 
+  std::string edgesFilename("web-NotreDame.txt");
+  std::vector<uint32_t> vertices_x, vertices_y;
+
+  if (!loadEdges(edgesFilename, vertices_x, vertices_y))
+	  std::cout << "Error loading edges from ARC file\n";
+
+  std::cout << "Loaded " << vertices_x.size() << " " << vertices_y.size() << " vertices from ARC file\n";
+
   //K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
   //K2treeConstructionTest(size*size, "matrix16x16_original.txt");
   //K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
   //K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
   //K2treeQueries(k, size, numThreads, "T_"+to_string(size)+"_"+to_string(p)+"_h_"+to_string(height)+".txt",
   //  "L_"+to_string(size)+"_"+to_string(p)+".txt", "T_rank_"+to_string(size)+"_"+to_string(p)+".txt", height, t_size, l_size);
-  K2treeConstructionFromEdges(32, "");
+  
 
-  //generateMortonNumbers();
+  generateMortonNumbers(vertices_x.size(), vertices_x, vertices_y);
   //radixSort();
+  //K2treeConstructionFromEdges(32, "");
 
 
 }
