@@ -10,18 +10,20 @@
 *** ----------------------------------------------------------------------------
 **/
 
-
+#include <cm/cm.h>
 #include "cm_rt.h"
 
-//#include "../../compiler/include/cm/cm_vm.h"
+#include "../../compiler/include/cm/cm_vm.h"
 
 #include <time.h>
 #include <vector>
 #include <bitset>
 #include <algorithm>
+#include <iostream>
+#include <random>
 #include <math.h>
 #include "K2tree.h"
-#include "radix.h"
+#include "radixsort.h"
 
 // Includes bitmap_helpers.h for bitmap file open/save/compare operations.
 #include "bitmap_helpers.h"
@@ -34,6 +36,25 @@
 #include "isa_helpers.h"
 
 using namespace std;
+
+#ifdef CMRT_EMU
+extern "C" void cmk_bits_test();
+
+extern "C" void cmk_last_levels_construction(SurfaceIndex matrix_in, SurfaceIndex L_out, SurfaceIndex T_out, uint total_threads, uint x, uint y);
+extern "C" void cmk_mid_levels_construction(SurfaceIndex matrix_in, SurfaceIndex T_out, uint total_threads, uint x, uint y);
+
+extern "C" void cmk_construction_from_edges(SurfaceIndex input, uint offset_start, uint start, uint end);
+
+extern "C" void cmk_generate_morton_numbers(SurfaceIndex input, SurfaceIndex ouput);
+
+extern "C" void PerThreadHist(uint numKeys, uint radixPos, svmptr_t ibuf, svmptr_t obuf);
+extern "C" void ScanHist(svmptr_t ibuf, svmptr_t obuf);
+extern "C" void ScanKeys(uint numKeys, uint radixPos, svmptr_t ibuf, svmptr_t ibufHist, svmptr_t obuf);
+extern "C" void ScanKeysUncoalesced(uint numKeys, uint radixPos, svmptr_t ibuf, svmptr_t ibufHist, svmptr_t obuf);
+
+extern "C" void cmk_neighbors_test(SurfaceIndex T, SurfaceIndex L, SurfaceIndex T_rank, uint t_size, uint l_size, uint height, uint k, uint start, uint end);
+extern "C" void cmk_range_test(SurfaceIndex T, SurfaceIndex L, SurfaceIndex T_rank, uint t_size, uint l_size, uint height, uint k, uint start, uint end);
+#endif
 
 void cmk_bits_test();
 void cmk_last_levels_construction(SurfaceIndex matrix_in, SurfaceIndex L_out, SurfaceIndex T_out, UINT total_threads, UINT x, UINT y);
@@ -719,8 +740,8 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
 
 
   uint32_t *edges;
-  edges = (uint32_t*)CM_ALIGNED_MALLOC((size) * sizeof(uint32_t), 0x1000);
-
+  edges = (uint32_t*)CM_ALIGNED_MALLOC((size*2) * sizeof(uint32_t), 0x1000);
+  memset(edges, 0, sizeof(uint64_t) * (size*2));
   //set values
   edges[0] = 6; // 1;
   edges[1] = 7; // 18;
@@ -806,7 +827,7 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
 
   // create buffers for input matrix, T and L
   CmBuffer *edgesBuf;
-  cm_result_check(device->CreateBuffer(size * sizeof(unsigned int), edgesBuf));
+  cm_result_check(device->CreateBuffer(size*2 * sizeof(uint64_t), edgesBuf));
   cm_result_check(edgesBuf->WriteSurface((const unsigned char*)edges, NULL));
 
 
@@ -1058,367 +1079,256 @@ void generateMortonNumbers() {
 
 }
 
-void cmk_radix_count(SurfaceIndex input, SurfaceIndex output, unsigned int n);
-void cmk_radix_bucket(SurfaceIndex input, SurfaceIndex table,
-  SurfaceIndex output, unsigned int bin0_cnt, unsigned int bin1_cnt,
-  unsigned int bin2_cnt, unsigned int bin3_cnt, unsigned int n);
 
-#define LOG2_ELEMENTS 26
-//
-// validate radix_count result
-//
-bool validate_count(uint64_t inputs[], unsigned int result[],
-  unsigned int total_threads, unsigned int size,
-  unsigned n) {
-  unsigned int binCount[4];
-  binCount[0] = binCount[1] = binCount[2] = binCount[3] = 0;
-  unsigned long long mask = 0x3 << n;
-  for (int i = 0; i < size; i++) {
-    binCount[(inputs[i] & mask) >> n]++;
-  }
-
-  unsigned int total_cnt[BIN_NUM];
-  total_cnt[0] = total_cnt[1] = total_cnt[2] = total_cnt[3] = 0;
-  for (int i = 0; i < total_threads; i++) {
-    total_cnt[0] += result[i*BIN_NUM];
-    total_cnt[1] += result[i*BIN_NUM + 1];
-    total_cnt[2] += result[i*BIN_NUM + 2];
-    total_cnt[3] += result[i*BIN_NUM + 3];
-  }
-
-  cout << "Expected result  for n=" << n << ": " <<
-    binCount[0] << " " <<
-    binCount[1] << " " <<
-    binCount[2] << " " <<
-    binCount[3] << " " << endl;
-  cout << "result " <<
-    total_cnt[0] << " " <<
-    total_cnt[1] << " " <<
-    total_cnt[2] << " " <<
-    total_cnt[3] << " " << endl;
-  return (binCount[0] == total_cnt[0] &&
-    binCount[1] == total_cnt[1] &&
-    binCount[2] == total_cnt[2] &&
-    binCount[3] == total_cnt[3]);
-}
-//
-// validate bin's contents
-//
-bool validate_bin(uint64_t outputs[], unsigned int binCount[], unsigned int n) {
-  unsigned long long mask = 0x3 << n;
-  int idx = 0;
-  for (int i = 0; i < binCount[0]; i++, idx++) {
-    if (((outputs[idx] & mask) >> n) != 0) {
-      cout << "Bin0 error at idx = " << idx << " value= " << outputs[idx] << endl;
-      return false;
-    }
-  }
-  for (int i = 0; i < binCount[1]; i++, idx++) {
-    if (((outputs[idx] & mask) >> n) != 1) {
-      cout << "Bin1 error at idx = " << idx << " value= " << outputs[idx] << endl;
-      return false;
-    }
-  }
-  for (int i = 0; i < binCount[2]; i++, idx++) {
-    if (((outputs[idx] & mask) >> n) != 2) {
-      cout << "Bin2 error at idx = " << idx << " value= " << outputs[idx] << endl;
-      return false;
-    }
-  }
-  for (int i = 0; i < binCount[3]; i++, idx++) {
-    if (((outputs[idx] & mask) >> n) != 3) {
-      cout << "Bin3 error at idx = " << idx << " value= " << outputs[idx] << endl;
-      return false;
-    }
-  }
-  return true;
+double getSeconds() {
+	LARGE_INTEGER freq, val;
+	QueryPerformanceFrequency(&freq);
+	QueryPerformanceCounter(&val);
+	return (double)val.QuadPart / (double)freq.QuadPart;
 }
 
-static unsigned int clock_prefix = 0;
-void  compute_prefixsum(unsigned int prefixSum[], unsigned int total_threads) {
-#if _DEBUG
-  cout << "Count Table" << endl;
-  for (int i = 0; i < total_threads; i++)
-    cout << "\t" << prefixSum[i*BIN_NUM] << "\t" << prefixSum[i*BIN_NUM + 1]
-    << "\t" << prefixSum[i*BIN_NUM + 2] << "\t" << prefixSum[i*BIN_NUM + 3] << endl;
+struct SortResults {
+	std::string algorithm = "";
+	size_t numKeys = 0;
 
-  cout << "Prefix Sum Table " << endl;
-  cout << "\t" << prefixSum[0] << "\t" << prefixSum[1] << "\t" << prefixSum[2] << "\t" << prefixSum[3] << endl;
-#endif
-  clock_t start = clock();
-  for (int i = 1; i < total_threads; i++) {
-    prefixSum[i*BIN_NUM] += prefixSum[(i - 1)*BIN_NUM];
-    prefixSum[i*BIN_NUM + 1] += prefixSum[(i - 1)*BIN_NUM + 1];
-    prefixSum[i*BIN_NUM + 2] += prefixSum[(i - 1)*BIN_NUM + 2];
-    prefixSum[i*BIN_NUM + 3] += prefixSum[(i - 1)*BIN_NUM + 3];
-#if _DEBUG
-    cout << "\t" << prefixSum[i*BIN_NUM] << "\t" << prefixSum[i*BIN_NUM + 1]
-      << "\t" << prefixSum[i*BIN_NUM + 2] << "\t" << prefixSum[i*BIN_NUM + 3] << endl;
-#endif
-  }
-  clock_t end = clock();
+	double totalGPUTimeMS = 0.0;
+	double totalCPUTimeMS = 0.0;
+	double throughputMKeys = 0.0;
 
-  clock_prefix += end - start;
-}
+	void print() {
+		std::cout << "---- ALGORITHM: " << algorithm << " ----" << std::endl;
+		std::cout << "Total time GPU clock:       " << totalGPUTimeMS << " ms" << std::endl;
+		std::cout << "Total time CPU clock:       " << totalCPUTimeMS << " ms" << std::endl;
+		std::cout << "Throughput:                 " << throughputMKeys << " MKeys/s" << std::endl;
+		std::cout << std::endl;
+	}
+};
 
-void validate_sorted_result(uint64_t expectOutputs[], uint64_t result[], unsigned int size) {
-  clock_t start = clock(); // start timer
-  std::sort(expectOutputs, expectOutputs + size);
-  clock_t end = clock(); // end timer
-  cout << " CPU Sorting Time = " << end - start << " msec " << endl;
+SortResults sortVectorCM(KeyType *&keys, uint32_t numKeys) {
+	// Initialize CM Device
+	CmDevice *device = nullptr;
+	unsigned int version = 0;
+	cm_result_check(::CreateCmDevice(device, version));
 
-  bool pass = true;
-  for (unsigned int i = 0; i < size; ++i) {
-    if (expectOutputs[i] != result[i]) {
-      cout << "Difference is detected at i= " << i << " Expect = " << expectOutputs[i] << " Actual = " << result[i] << endl;
-      pass = false;
-      break;
-    }
-  }
-  cout << "Radix Sort " << (pass ? "PASSED" : "FAILED") << endl;
-}
+	// Initialize CmProgram
+	std::string isa_code = cm::util::isa::loadFile("IndexBuilder_genx.isa");
+	if (isa_code.size() == 0) {
+		std::cout << "Error: empty ISA binary" << std::endl;
+		exit(1);
+	}
 
-void dumpElems(uint64_t elems[], unsigned int size){
-  cout << "Elements: ";
-  for(int i = 0; i < size; i++){
-    printf("%lu, ", elems[i] );
+	CmProgram *program = nullptr;
+	cm_result_check(device->LoadProgram(const_cast<char*>(isa_code.data()), isa_code.size(), program));
 
-  }
-  cout << std::endl;
-}
+	// Initialize Cm Kernels
+	CmKernel *HistKernel = nullptr;
+	cm_result_check(device->CreateKernel(program, CM_KERNEL_FUNCTION(PerThreadHist), HistKernel));
 
-int radixSort(){
-  uint64_t * pInputs;
-  uint64_t * pActualOutputs;
-  uint64_t * pExpectOutputs;
-  unsigned int * prefixSum;
+	CmKernel *HistScanKernel = nullptr;
+	cm_result_check(device->CreateKernel(program, CM_KERNEL_FUNCTION(ScanHist), HistScanKernel));
 
-  unsigned int size = 1 << LOG2_ELEMENTS;
-  // prepare intput data
-  pInputs = (uint64_t*)CM_ALIGNED_MALLOC(size * sizeof(uint64_t), 0x1000);
-  for (unsigned int i = 0; i < size; ++i) {
-    pInputs[i] = (rand() << 32) + rand();
-    // pInputs_[i] = rand() % (1 << 15);
-  }
-  // prepare output buffer for sorted result
-  pActualOutputs = (uint64_t*)CM_ALIGNED_MALLOC(size * sizeof(uint64_t), 0x1000);
-  memset(pActualOutputs, 0, sizeof(uint64_t) * size);
-  // prepare validation result. call std::sort to get the expected result
-  pExpectOutputs = new uint64_t[size];
-  memcpy(pExpectOutputs, pInputs, sizeof(uint64_t) * size);
-  std::sort(pExpectOutputs, pExpectOutputs + size);
-  //dumpElems(pInputs, size);
-  //dumpElems(pExpectOutputs, size);
-
-  // Creates a CmDevice
-  // Param device: pointer to the CmDevice object.
-  // Param version: CM API version supported by the runtime library.
-  CmDevice *device = nullptr;
-  unsigned int version = 0;
-  cm_result_check(::CreateCmDevice(device, version));
-  // The file radix_genx.isa is generated by the CM compiler.
-  // Reads in the virtual ISA from "radix_genx.isa" to the code
-  // buffer.
-  std::string isa_code = cm::util::isa::loadFile("IndexBuilder_genx.isa");
-  if (isa_code.size() == 0) {
-    std::cerr << "Error: empty ISA binary.\n";
-    exit(1);
-  }
-  // Creates a CmProgram object consisting of the kernels loaded
-  // from the code buffer.
-  CmProgram *program = nullptr;
-  cm_result_check(device->LoadProgram(const_cast<char*>(isa_code.data()),
-    isa_code.size(),
-    program));
-
-  // Creates the radix bin-count kernel.
-  CmKernel *count_kernel = nullptr;
-  cm_result_check(device->CreateKernel(program,
-    CM_KERNEL_FUNCTION(cmk_radix_count),
-    count_kernel));
-  // create radix bucket kernel
-  CmKernel *bucket_kernel = nullptr;
-  cm_result_check(device->CreateKernel(program,
-    CM_KERNEL_FUNCTION(cmk_radix_bucket),
-    bucket_kernel));
-
-  // determine how many threads we need
-  // each thread handling 256 elements
-  unsigned int width, height; // thread space width and height
-  unsigned int total_threads = size / BASE_SZ;
-  if (total_threads < MAX_TS_WIDTH) {
-    width = total_threads;
-    height = 1;
-  }
-  else {
-    width = MAX_TS_WIDTH;
-    height = total_threads / MAX_TS_WIDTH;
-  }
-  // create buffers for input and output and prefix sum table
-  // in system-memory, zero-copy for GPU-CPU sharing.
-  CmBufferUP *inBuf;
-  cm_result_check(device->CreateBufferUP(size * sizeof(uint64_t), (void *)pInputs, inBuf));
-  CmBufferUP *outBuf;
-  cm_result_check(device->CreateBufferUP(size * sizeof(uint64_t), (void *)pActualOutputs, outBuf));
-  // prepare prefixSum table
-  prefixSum = (unsigned int*)CM_ALIGNED_MALLOC(total_threads*BIN_NUM * sizeof(unsigned int), 0x1000);
-  CmBufferUP *prefixBuf;
-  cm_result_check(device->CreateBufferUP(total_threads*BIN_NUM * sizeof(unsigned int), (void *)prefixSum, prefixBuf));
-  // When a surface is created by the CmDevice a SurfaceIndex object is
-  // created. This object contains a unique index value that is mapped to the
-  // surface.
-  // Gets the input surface index.
-  SurfaceIndex *input_idx = nullptr;
-  cm_result_check(inBuf->GetIndex(input_idx));
-  SurfaceIndex *output_idx = nullptr;
-  cm_result_check(outBuf->GetIndex(output_idx));
-  SurfaceIndex *prefix_idx = nullptr;
-  cm_result_check(prefixBuf->GetIndex(prefix_idx));
-
-  // Creates a CmThreadSpace object.
-  CmThreadSpace *thread_space = nullptr;
-  cm_result_check(device->CreateThreadSpace(width, height, thread_space));
-
-  // Creates a task queue.
-  CmQueue *cmd_queue = nullptr;
-  cm_result_check(device->CreateQueue(cmd_queue));
-
-  // Creates CmTask objects.
-  // The CmTask object is a container for CmKernel pointers. It is used to
-  // enqueue the kernels for execution.
-  CmTask *cnt_task = nullptr;
-  cm_result_check(device->CreateTask(cnt_task));
-  CmTask *bucket_task = nullptr;
-  cm_result_check(device->CreateTask(bucket_task));
-  // Adds a CmKernel pointer to CmTask.
-  // This task has one kernel, "cmk_radix_count".
-  cm_result_check(cnt_task->AddKernel(count_kernel));
-  cm_result_check(bucket_task->AddKernel(bucket_kernel));
-  // Inits the print buffer.
-  // Here the buffer used by printf is allocated.
-  cm_result_check(device->InitPrintBuffer());
-
-  cout << "Radix Sort (" << size << ") Start..." << endl;
-
-  clock_t start = clock(); // start timer
-
-                           // 16 iterations for sorting 32-bit unsigned numbers, 2-bit each iteration
-  for (int n = 0; n <= 64; n += N_BITS) {
-    // cmk_radix_count(SurfaceIndex input, SurfaceIndex prefix, unsigned int n).
-    // set argument for radix_count
-    // determine even or odd iteration. alternate in and out buffers
-    bool even_iteration = ((n >> 1) & 0x1) == 0;
-    if (even_iteration) {
-      cm_result_check(count_kernel->SetKernelArg(0, sizeof(SurfaceIndex), input_idx));
-    }
-    else {
-      cm_result_check(count_kernel->SetKernelArg(0, sizeof(SurfaceIndex), output_idx));
-    }
-    cm_result_check(count_kernel->SetKernelArg(1, sizeof(SurfaceIndex), prefix_idx));
-    cm_result_check(count_kernel->SetKernelArg(2, sizeof(int), &n));
-    // Launches the task on the GPU. Enqueue is a non-blocking call, i.e. the
-    // function returns immediately without waiting for the GPU to start or
-    // finish execution of the task. The runtime will query the HW status. If
-    // the hardware is not busy, the runtime will submit the task to the
-    // driver/HW; otherwise, the runtime will submit the task to the driver/HW
-    // at another time.
-    // An event, "sync_event", is created to track the status of the task.
-    CmEvent *event = nullptr;
-    cm_result_check(cmd_queue->Enqueue(cnt_task, event, thread_space));
-
-    // Waits for the task associated with "sync_event" finishing execution
-    // on the GPU.
-    unsigned long time_out = -1;
-    cm_result_check(event->WaitForTaskFinished(time_out));
-    //cm_result_check(device->FlushPrintBuffer());
-    bool pass = true;
-#ifdef _DEBUG
-    // validate bin count result
-    pass = validate_count(even_iteration ? pInputs : pActualOutputs, prefixSum, total_threads, size, n);
+	CmKernel *KeyScanKernel = nullptr;
+#ifdef SLM_COALESCE
+	cm_result_check(device->CreateKernel(program, CM_KERNEL_FUNCTION(ScanKeys), KeyScanKernel));
+#else
+	cm_result_check(device->CreateKernel(program, CM_KERNEL_FUNCTION(ScanKeysUncoalesced), KeyScanKernel));
 #endif
 
-    // compute prefix sum on CPU
-    compute_prefixsum(prefixSum, total_threads);
+	// Initialize Cm Threadspaces
+#ifdef CMRT_EMU
+	CmThreadSpace *tsHist = nullptr;
+	CmThreadSpace *tsHistScan = nullptr;
 
-#ifdef _DEBUG
-    cout << "Count " << (pass ? "=> PASSED)" : "=> FAILED") << endl << endl;
+	cm_result_check(device->CreateThreadSpace(GPU_THREADS, 1, tsHist));
+	cm_result_check(device->CreateThreadSpace(1, 1, tsHistScan));
+#else
+	CmThreadGroupSpace *tsHist = nullptr;
+	CmThreadGroupSpace *tsHistScan = nullptr;
+
+	cm_result_check(device->CreateThreadGroupSpace(WG_SIZE, 1, GPU_THREADS / WG_SIZE, 1, tsHist));
+	cm_result_check(device->CreateThreadGroupSpace(1, 1, 1, 1, tsHistScan));
 #endif
-    unsigned int binCount[4];
-    binCount[0] = prefixSum[(total_threads - 1)*BIN_NUM];
-    binCount[1] = prefixSum[(total_threads - 1)*BIN_NUM + 1];
-    binCount[2] = prefixSum[(total_threads - 1)*BIN_NUM + 2];
-    binCount[3] = prefixSum[(total_threads - 1)*BIN_NUM + 3];
 
-    // cmk_radix_bucket(
-    // SurfaceIndex input, SurfaceIndex table, SurfaceIndex output,
-    // unsigned int bin0_cnt, unsigned int bin1_cnt, unsigned int bin2_cnt,
-    // unsigned int bin3_cnt, unsigned int n);
-    // set arguments
-    // determine even or odd iteration. alternate in and out buffers
-    if (even_iteration) {
-      cm_result_check(bucket_kernel->SetKernelArg(0, sizeof(SurfaceIndex), input_idx));
-      cm_result_check(bucket_kernel->SetKernelArg(2, sizeof(SurfaceIndex), output_idx));
-    }
-    else {
-      cm_result_check(bucket_kernel->SetKernelArg(0, sizeof(SurfaceIndex), output_idx));
-      cm_result_check(bucket_kernel->SetKernelArg(2, sizeof(SurfaceIndex), input_idx));
-    }
+	// Initialize Sort Buffers
+	CmBufferSVM *histBuff = nullptr;
+	CmBufferSVM *histScanBuff = nullptr;
+	CmBufferSVM *inputBuff = nullptr;
+	CmBufferSVM *outputBuff = nullptr;
 
-    cm_result_check(bucket_kernel->SetKernelArg(1, sizeof(SurfaceIndex), prefix_idx));
-    cm_result_check(bucket_kernel->SetKernelArg(3, sizeof(unsigned int), &binCount[0]));
-    cm_result_check(bucket_kernel->SetKernelArg(4, sizeof(unsigned int), &binCount[1]));
-    cm_result_check(bucket_kernel->SetKernelArg(5, sizeof(unsigned int), &binCount[2]));
-    cm_result_check(bucket_kernel->SetKernelArg(6, sizeof(unsigned int), &binCount[3]));
-    cm_result_check(bucket_kernel->SetKernelArg(7, sizeof(unsigned int), &n));
+	// declare pointers to hold buffer data
+	void *inputBuffData = keys;
+	void *outputBuffData = nullptr;
+	void *histBuffData = nullptr;
+	void *histScanBuffData = nullptr;
 
-    cm_result_check(cmd_queue->Enqueue(bucket_task, event, thread_space));
-    // Waits for the task associated with "sync_event" finishing execution
-    // on the GPU.
-    cm_result_check(event->WaitForTaskFinished(time_out));
-    //
-    // validate bin result
-    //
-#ifdef _DEBUG
-    pass = validate_bin(even_iteration ? pActualOutputs : pInputs, binCount, n);
-    cout << "Bucket " << (pass ? "=> PASSED" : "=> FAILED") << endl << endl;
-    //dumpElems(pActualOutputs, size);
+	// create buffers on device
+	cm_result_check(device->CreateBufferSVM(numKeys * sizeof(KeyType), inputBuffData, CM_SVM_ACCESS_FLAG_DEFAULT, inputBuff));
+	cm_result_check(device->CreateBufferSVM(numKeys * sizeof(KeyType), outputBuffData, CM_SVM_ACCESS_FLAG_DEFAULT, outputBuff));
+
+	cm_result_check(device->CreateBufferSVM((GPU_THREADS * RADIX_SIZE) * sizeof(uint32_t), histBuffData, CM_SVM_ACCESS_FLAG_DEFAULT, histBuff));
+	cm_result_check(device->CreateBufferSVM(((GPU_THREADS + 1) * RADIX_SIZE) * sizeof(uint32_t), histScanBuffData, CM_SVM_ACCESS_FLAG_DEFAULT, histScanBuff));
+
+	// Initialize Cm Tasks
+	CmTask *HistTask = nullptr;
+	cm_result_check(device->CreateTask(HistTask));
+	cm_result_check(HistTask->AddKernel(HistKernel));
+
+	CmTask *HistScanTask = nullptr;
+	cm_result_check(device->CreateTask(HistScanTask));
+	cm_result_check(HistScanTask->AddKernel(HistScanKernel));
+
+	CmTask *KeyScanTask = nullptr;
+	cm_result_check(device->CreateTask(KeyScanTask));
+	cm_result_check(KeyScanTask->AddKernel(KeyScanKernel));
+
+	// Initialize Task Queue
+	CmQueue *taskQueue = nullptr;
+	cm_result_check(device->CreateQueue(taskQueue));
+
+	// Intialize events
+	CmEvent *HistTaskEvent = nullptr;
+	CmEvent *HistScanTaskEvent = nullptr;
+	CmEvent *KeyScanTaskEvent = nullptr;
+
+	// Performance timing variables
+	uint64_t histKernelTime = 0;
+	uint64_t histScanKernelTime = 0;
+	uint64_t keyScanKernelTime = 0;
+	uint64_t totalGPUTime = 0;
+	double cpuTimeStart = getSeconds();
+
+	// start sorting
+	for (uint32_t radixPos = 0; radixPos < KEY_DIGITS; radixPos += RADIX_DIGITS) {
+		// set kernel parameters
+		cm_result_check(HistKernel->SetKernelArg(0, sizeof(numKeys), &numKeys));
+		cm_result_check(HistKernel->SetKernelArg(1, sizeof(radixPos), &radixPos));
+		cm_result_check(HistKernel->SetKernelArg(2, sizeof(void *), &inputBuffData));
+		cm_result_check(HistKernel->SetKernelArg(3, sizeof(void *), &histBuffData));
+
+		cm_result_check(HistScanKernel->SetKernelArg(0, sizeof(void *), &histBuffData));
+		cm_result_check(HistScanKernel->SetKernelArg(1, sizeof(void *), &histScanBuffData));
+
+		cm_result_check(KeyScanKernel->SetKernelArg(0, sizeof(numKeys), &numKeys));
+		cm_result_check(KeyScanKernel->SetKernelArg(1, sizeof(radixPos), &radixPos));
+		cm_result_check(KeyScanKernel->SetKernelArg(2, sizeof(void *), &inputBuffData));
+		cm_result_check(KeyScanKernel->SetKernelArg(3, sizeof(void *), &histScanBuffData));
+		cm_result_check(KeyScanKernel->SetKernelArg(4, sizeof(void *), &outputBuffData));
+
+		// Enqueue Tasks
+		// Note that for EMU Mode we use a standard threadspace but with HW mode we use a threadgroupspace
+#ifdef CMRT_EMU
+		cm_result_check(taskQueue->Enqueue(HistTask, HistTaskEvent, tsHist));
+		cm_result_check(HistTaskEvent->WaitForTaskFinished());
+
+		cm_result_check(taskQueue->Enqueue(HistScanTask, HistScanTaskEvent, tsHistScan));
+		cm_result_check(HistScanTaskEvent->WaitForTaskFinished());
+
+		cm_result_check(taskQueue->Enqueue(KeyScanTask, KeyScanTaskEvent, tsHist));
+		cm_result_check(KeyScanTaskEvent->WaitForTaskFinished());
+#else
+		cm_result_check(taskQueue->EnqueueWithGroup(HistTask, HistTaskEvent, tsHist));
+		cm_result_check(HistTaskEvent->WaitForTaskFinished());
+
+		cm_result_check(taskQueue->EnqueueWithGroup(HistScanTask, HistScanTaskEvent, tsHistScan));
+		cm_result_check(HistScanTaskEvent->WaitForTaskFinished());
+
+		cm_result_check(taskQueue->EnqueueWithGroup(KeyScanTask, KeyScanTaskEvent, tsHist));
+		cm_result_check(KeyScanTaskEvent->WaitForTaskFinished());
 #endif
-  //  break;
-  }
-  clock_t end = clock(); // end timer
-  cout << " Sorting Time = " << end - start << " msec " << endl;
-  cout << " Prefix Time = " << clock_prefix << " msec " << endl;
 
-  validate_sorted_result(pExpectOutputs, pInputs, size);
+		// Get execution time
+		cm_result_check(HistTaskEvent->GetExecutionTime(histKernelTime));
+		cm_result_check(HistScanTaskEvent->GetExecutionTime(histScanKernelTime));
+		cm_result_check(KeyScanTaskEvent->GetExecutionTime(keyScanKernelTime));
 
-  //dumpElems(pExpectOutputs, size);
-  //dumpElems(pInputs, size);
-  // Flushes the print buffer to stdout.
-  // This function call will also clear/reset the print buffer.
-  //cm_result_check(device->FlushPrintBuffer());
+		totalGPUTime += histKernelTime + histScanKernelTime + keyScanKernelTime;
 
-  // Destroys a CmTask object.
-  // CmTask will be destroyed when CmDevice is destroyed.
-  // Here, the application destroys the CmTask object by itself.
-  cm_result_check(device->DestroyTask(cnt_task));
-  cm_result_check(device->DestroyTask(bucket_task));
+		// destroy events
+		cm_result_check(taskQueue->DestroyEvent(HistTaskEvent));
+		cm_result_check(taskQueue->DestroyEvent(HistScanTaskEvent));
+		cm_result_check(taskQueue->DestroyEvent(KeyScanTaskEvent));
 
-  // Destroy a CmThreadSpace object.
-  // CmThreadSpace will be destroyed when CmDevice is destroyed.
-  // Here, the application destroys the CmThreadSpace object by itself.
-  cm_result_check(device->DestroyThreadSpace(thread_space));
-  // Destroys the CmDevice.
-  // Also destroys surfaces, kernels, tasks, thread spaces, and queues that
-  // were created using this device instance that have not explicitly been
-  // destroyed by calling the respective destroy functions.
-  cm_result_check(::DestroyCmDevice(device));
+		// swap the buffers
+		std::swap(outputBuffData, inputBuffData);
+	}
 
-  CM_ALIGNED_FREE(pInputs);
-  CM_ALIGNED_FREE(pActualOutputs);
-  CM_ALIGNED_FREE(prefixSum);
-  delete[]pExpectOutputs;
+	double cpuTimeEnd = getSeconds();
 
+	// calculate performance statistics
+	SortResults sr;
+	sr.algorithm = "genradixsort";
+	sr.numKeys = numKeys;
+	sr.totalCPUTimeMS = (cpuTimeEnd - cpuTimeStart) * 1E3;
+	sr.totalGPUTimeMS = totalGPUTime / 1E6;
+	sr.throughputMKeys = (float(numKeys) / (cpuTimeEnd - cpuTimeStart)) / 1E6;
+
+	return sr;
 }
+
+SortResults sortVectorSTD(std::vector<KeyType> &keys) {
+	// sort using std::sort
+	double tStart = getSeconds();
+	std::sort(keys.begin(), keys.end());
+	double tEnd = getSeconds();
+	double cpuTime = float(tEnd - tStart);
+
+	// calculate performance statistics
+	SortResults sr;
+	sr.algorithm = "std::sort";
+	sr.numKeys = keys.size();
+	sr.totalCPUTimeMS = cpuTime * 1E3;
+	sr.totalGPUTimeMS = -1.0;
+	sr.throughputMKeys = (float(keys.size()) / cpuTime) / 1E6;
+
+	return sr;
+}
+
+int radixSort() {
+	uint32_t numKeys = 1024 * 1024;
+	std::vector<KeyType> inputVector;
+	KeyType* inputPtr = (KeyType*)_aligned_malloc(numKeys * sizeof(KeyType), 4096);
+
+	// generate random data
+	std::random_device r;
+	std::default_random_engine e1(0);
+	std::uniform_int_distribution<KeyType> uniform_dist(0, KeyType(std::numeric_limits<KeyType>::max));
+
+	for (uint32_t i = 0; i < numKeys; i += 1) {
+		KeyType v = uniform_dist(e1);
+		inputVector.push_back(v);
+		inputPtr[i] = v;
+	}
+
+	// Sort using CM Radix Sort
+	SortResults cmSR = sortVectorCM(inputPtr, numKeys);
+
+	// Sort using std::sort
+	SortResults stdSR = sortVectorSTD(inputVector);
+
+	// validate sorting results
+	bool isValid = true;
+	for (size_t i = 0; i < numKeys; i++) {
+		if (inputPtr[i] != inputVector[i]) {
+			isValid = false;
+			break;
+		}
+	}
+
+	if (isValid) {
+		std::cout << "Sort Is Valid" << std::endl;
+		std::cout << std::endl;
+
+		cmSR.print();
+		stdSR.print();
+	}
+	else {
+		std::cout << "Sort Is Not Valid" << std::endl;
+		return 1;
+	}
+
+	return 0;
+}
+
 
 int main(int argc, char * argv[])
 {
@@ -1443,8 +1353,10 @@ int main(int argc, char * argv[])
   //K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
   //K2treeQueries(k, size, numThreads, "T_"+to_string(size)+"_"+to_string(p)+"_h_"+to_string(height)+".txt",
   //  "L_"+to_string(size)+"_"+to_string(p)+".txt", "T_rank_"+to_string(size)+"_"+to_string(p)+".txt", height, t_size, l_size);
-  //K2treeConstructionFromEdges(32, "");
+  K2treeConstructionFromEdges(32, "");
 
   //generateMortonNumbers();
-  radixSort();
+  //radixSort();
+
+
 }

@@ -612,7 +612,8 @@ typedef uint32_t size_t;
 #endif
   inline uint32_t rev(uint32_t x)
   {
-    return cm_bf_reverse<uint32_t>(x);
+	  vector<uint32_t, 1> xx = x;
+    return cm_bf_reverse<uint32_t>(xx)[0];
   }
 
   inline vector<uint32_t, SIMD_SIZE> rev(vector<uint32_t, SIMD_SIZE> x)
