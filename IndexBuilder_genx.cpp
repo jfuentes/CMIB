@@ -361,19 +361,19 @@ inline _GENX_ void cmk_read(SurfaceIndex index, unsigned int offset, vector_ref<
 	}
 }
 
+template<typename ty, unsigned int size>
+inline _GENX_ void cmk_read(SurfaceIndex index, unsigned int offset, vector_ref<ty, size> v) {
+#pragma unroll
+	for (unsigned int i = 0; i < size; i += 32) {
+		read(index, offset + (i) * sizeof(ty), v.template select<32, 1>(i));
+	}
+}
+
 template<typename ty, unsigned int size, unsigned int chunk>
 inline _GENX_ void cmk_read(SurfaceIndex index, unsigned int offset, vector_ref<ty, size> v) {
 #pragma unroll
 	for (unsigned int i = 0; i < size; i += chunk) {
 		read(index, offset + (i) * sizeof(ty), v.template select<chunk, 1>(i));
-	}
-}
-
-template<typename ty, unsigned int size>
-inline _GENX_ void cmk_read(SurfaceIndex index, unsigned int offset, vector_ref<ty, size> v) {
-#pragma unroll
-	for (unsigned int i = 0; i < size; i += 32) {
-		read(DWALIGNED(index), offset + (i) * sizeof(ty), v.template select<32, 1>(i));
 	}
 }
 
@@ -401,8 +401,8 @@ _GENX_MAIN_ void cmk_last_levels_construction(SurfaceIndex matrix_in, SurfaceInd
 	//uint h_pos = total_threads;
 	// each thread handles K2_ENTRIES entries.
 	unsigned int offset = (h_pos) << 2;
-	vector<unsigned int, K2_ENTRIES> submatrix;
-	cmk_read<unsigned int, K2_ENTRIES>(matrix_in, offset, submatrix, total_threads);
+	vector<unsigned int, K_ENTRIES> submatrix;
+	cmk_read<unsigned int, K_ENTRIES>(matrix_in, offset, submatrix, total_threads);
 	matrix_ref<unsigned int, BLOCK_SZ, BLOCK_SZ> smatrix = submatrix.format<unsigned int, BLOCK_SZ, BLOCK_SZ>();
 
 	bool active = false;
@@ -505,8 +505,8 @@ _GENX_MAIN_ void cmk_mid_levels_construction(SurfaceIndex matrix_in, SurfaceInde
 	// each thread handles K2_ENTRIES entries.
 	unsigned int offset = (h_pos) << 2;
 
-	vector<unsigned int, K2_ENTRIES> submatrix;
-	cmk_read<unsigned int, K2_ENTRIES>(matrix_in, offset, submatrix, total_threads);
+	vector<unsigned int, K_ENTRIES> submatrix;
+	cmk_read<unsigned int, K_ENTRIES>(matrix_in, offset, submatrix, total_threads);
 	matrix_ref<unsigned int, BLOCK_SZ, BLOCK_SZ> smatrix = submatrix.format<unsigned int, BLOCK_SZ, BLOCK_SZ>();
 
 	bool active = false;
@@ -600,10 +600,6 @@ _GENX_MAIN_ void cmk_mid_levels_construction(SurfaceIndex matrix_in, SurfaceInde
 
 }
 
-static const ushort OFFSETS_X[16] = { 0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60 };
-static const ushort OFFSETS_Y[16] = { 2, 6, 10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62 };
-static const ushort SHIFTS[16] = { 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30 };
-
 _GENX_MAIN_ void cmk_generate_morton_numbers(SurfaceIndex vertices_x, SurfaceIndex vertices_y, SurfaceIndex ouput, uint numEdges) {
 	vector<uint, 32> x, y;
 	vector<uint, 32> src = 0;
@@ -613,16 +609,19 @@ _GENX_MAIN_ void cmk_generate_morton_numbers(SurfaceIndex vertices_x, SurfaceInd
 	uint global_id = get_thread_origin_x();
 	uint edgesPerThread = numEdges / GPU_THREADS;
 	uint threadOffset = edgesPerThread * global_id;
-
+#pragma unroll
 	for (uint currentChunk = 0; currentChunk < edgesPerThread; currentChunk += 32) {
 		cmk_read<uint, 32>(vertices_x, (threadOffset + currentChunk) << 2, x);
 		cmk_read<uint, 32>(vertices_y, (threadOffset + currentChunk) << 2, y);
 		vector<uint64_t, 32> result = 0;
+
+#pragma unroll
 		for (uint k = 0; k < 64; k += 4) { // x
 			result.select<32, 1>(0) |= cm_bf_insert<uint64_t>(2, k, x.select<32, 1>(0), src);
 			x.select<32, 1>(0) >>= 2;
 		}
 
+#pragma unroll
 		for (uint k = 2; k < 64; k += 4) { // y
 			result.select<32, 1>(0) |= cm_bf_insert<uint64_t>(2, k, y.select<32, 1>(0), src);
 			y.select<32, 1>(0) >>= 2;
@@ -637,191 +636,91 @@ _GENX_MAIN_ void cmk_generate_morton_numbers(SurfaceIndex vertices_x, SurfaceInd
 static const ushort OFFSETS[8] = { 0, 4, 8, 12, 16, 20, 24, 28 };
 
 
-static const uint PRECOMPUTED_SUM[256] = { 0, 0, 0, 16, 0, 256, 256, 528, 0, 4096, 4096, 8208, 4096, 8448, 8448, 12816, 0, 65536, 65536, 131088,
-65536, 131328, 131328, 197136, 65536, 135168, 135168, 204816, 135168, 205056, 205056, 274960, 0, 1048576, 1048576, 2097168, 1048576, 2097408,
-2097408, 3146256, 1048576, 2101248, 2101248, 3153936, 2101248, 3154176, 3154176, 4207120, 1048576, 2162688, 2162688, 3276816, 2162688, 3277056,
-3277056, 4391440, 2162688, 3280896, 3280896, 4399120, 3280896, 4399360, 4399360, 5517840, 0, 16777216, 16777216, 33554448, 16777216, 33554688,
-33554688, 50332176, 16777216, 33558528, 33558528, 50339856, 33558528, 50340096, 50340096, 67121680, 16777216, 33619968, 33619968, 50462736, 33619968,
-50462976, 50462976, 67306000, 33619968, 50466816, 50466816, 67313680, 50466816, 67313920, 67313920, 84161040, 16777216, 34603008, 34603008, 52428816,
-34603008, 52429056, 52429056, 70255120, 34603008, 52432896, 52432896, 70262800, 52432896, 70263040, 70263040, 88093200, 34603008, 52494336, 52494336,
-70385680, 52494336, 70385920, 70385920, 88277520, 52494336, 70389760, 70389760, 88285200, 70389760, 88285440, 88285440, 106181136, 0, 268435456,
-268435456, 536870928, 268435456, 536871168, 536871168, 805306896, 268435456, 536875008, 536875008, 805314576, 536875008, 805314816, 805314816,
-1073754640, 268435456, 536936448, 536936448, 805437456, 536936448, 805437696, 805437696, 1073938960, 536936448, 805441536, 805441536, 1073946640,
-805441536, 1073946880, 1073946880, 1342452240, 268435456, 537919488, 537919488, 807403536, 537919488, 807403776, 807403776, 1076888080, 537919488,
-807407616, 807407616, 1076895760, 807407616, 1076896000, 1076896000, 1346384400, 537919488, 807469056, 807469056, 1077018640, 807469056, 1077018880,
-1077018880, 1346568720, 807469056, 1077022720, 1077022720, 1346576400, 1077022720, 1346576640, 1346576640, 1616130576, 268435456, 553648128, 553648128,
-838860816, 553648128, 838861056, 838861056, 1124074000, 553648128, 838864896, 838864896, 1124081680, 838864896, 1124081920, 1124081920, 1409298960,
-553648128, 838926336, 838926336, 1124204560, 838926336, 1124204800, 1124204800, 1409483280, 838926336, 1124208640, 1124208640, 1409490960, 1124208640,
-1409491200, 1409491200, 1694773776, 553648128, 839909376, 839909376, 1126170640, 839909376, 1126170880, 1126170880, 1412432400, 839909376, 1126174720,
-1126174720, 1412440080, 1126174720, 1412440320, 1412440320, 1698705936, 839909376, 1126236160, 1126236160, 1412562960, 1126236160, 1412563200, 1412563200,
-1698890256, 1126236160, 1412567040, 1412567040, 1698897936, 1412567040, 1698898176, 1698898176, 1985229328 };
-
-
-
 template<typename ty, unsigned int size>
 inline _GENX_ void write_int_tree(vector_ref<ty, size> tree, vector_ref<ushort, 2> indices,
 	uint x, uint len) {
 
 	tree[indices[0]] |= (x << (indices[1] * 4));
-	tree[indices[0] + 1] = (x >> (32 - indices[1] * 4));
+	tree[indices[0] + 1] = (x >> (WORD_SZ - indices[1] * 4));
 
 	indices[1] += len;
 	indices[0] += indices[1] / 8;
 	indices[1] %= 8;
 }
 
-_GENX_MAIN_ void cmk_construction_from_edges(SurfaceIndex input, uint offset_start, uint start, uint end, vector<uint, 256> lookupTable) {
+_GENX_MAIN_ void cmk_construction_from_edges(SurfaceIndex input, SurfaceIndex output,  uint numEdges, vector<uint, 256> lookupTable) {
 
-	uint total_elems = end - start;
-	vector<uint, 256> edges; // worst case, all vertices have links
-	vector<uint, 32> shifts;
-	vector<ushort, 32> mask;
-	vector<uint, 2> range, div; //cStart, cEnd
+	uint global_id = get_thread_origin_x();
+	uint edgesPerThread = numEdges / GPU_THREADS;
+	uint threadOffset = edgesPerThread * global_id;
+
+	vector<uint64_t, K_EDGES> edges; 
+	vector<uint, WORD_SZ> shifts;
+	vector<ushort, WORD_SZ> mask;
+	vector<uint, 2> range; //cStart, cEnd
 
 	uint i = 0, sum;
-	uint cumSum = 0;
-	cmk_read<uint, 256>(input, offset_start << 2, edges);
-	range[0] = edges[0];
-	uint diff = 32 - (range[0] % 32);
-	range[1] = range[0] + diff;
 
 	vector<uint, 16> tree = 0;
 
-	//vector<uint, 256> precomputed(PRECOMPUTED_SUM);
-	// L vector
-	vector<ushort, 256> L = 0; // Index = 0
 
-	// T vectors
-	vector<ushort, 64> T2 = 0; uint t2_idx = 0; // Index = 9
-	vector<ushort, 32> T1 = 0; uint t1_idx = 0; // Index = 12  (SZ should be 16)  ==== ERROR: cm_pack_mask of a vector<ushort, 16> ====
-	vector<ushort, 32> T0 = 0; uint t0_idx = 0; // Index = 14 (SZ should be 4)
+	vector<uint, WORD_SZ> subvec;
+	vector<uint, WORD_SZ/K_VALUE> subsubvec, resultVec, precomputedMask;
+	vector<ushort, WORD_SZ/K_VALUE> offsets(OFFSETS), width = K_VALUE, submask, subshifts;
 
 
-	// check every submatrix
-	// first submatrix
-	vector<uint, 32> subvec;
-	vector<uint, 8> subsubvec, resultVec, precomputedMask;
-	vector<ushort, 8> offsets(OFFSETS), width = 4, submask, subshifts;
-
-	ushort current8th = 0, l_idx = 0;
-
-	vector<uint, 2> widths = 0, offs = 0, vals;
-
-	// second and rest of the blocks
-	for (uint j = 0; j < 8; j++) {
-
-		subvec = edges.select<32, 1>(i);
-		mask = (subvec >= range[0]) & (subvec < range[1]);
-		t0_idx = subvec[0] / 64;
-		shifts = 1 << (subvec % 32);
-		subvec = 0;
-		subvec.merge(shifts, mask);
-		sum = cm_sum<uint>(subvec); // final result
-
-		i += cm_cbit(cm_pack_mask(mask));
-
-		// store L
-		// L - 32 bits
-		L.select<32, 1>(l_idx) = cm_unpack_mask<uint, 32>(sum);
-		l_idx += 32;
-		// store T
-		// T2 - 8 bits
-		subsubvec = sum;
-		resultVec = cm_bf_extract<uint>(width, offsets, subsubvec);
-		submask = (resultVec != 0);
-		T2.select<8, 1>(t2_idx) = submask;
-		t2_idx += 8;
-		// T1 - 2 bits
-		T1[t1_idx++] = (submask.select<4, 1>(0)).any();
-		T1[t1_idx++] = (submask.select<4, 1>(4)).any();
-
-		// T0 - 1 bit
-
-		if (edges[i] == 0)
-			break;
-		range[0] = edges[i];
-		range[1] = edges[i] + (32 - (range[0] % 32));
-	}
-
-
-
-
-	// compress vectors into bitstrings
-	// compress L
-	uint val;
 	vector<ushort, 2> L_indices = 0;
-	L_indices[0] = L_INDEX + 1;
-	//#pragma unroll
-	for (uint j = 0; j < 256; j += 32) {
-		val = cm_pack_mask(L.select<32, 1>(j));
-		if (!val)
-			continue;
-		subsubvec = val;
-		resultVec = cm_bf_extract<uint>(width, offsets, subsubvec);
-		submask = (resultVec != 0);
-		//printf("uncompressed %d ", val);
-		precomputedMask = lookupTable[cm_pack_mask(submask)]; // compress 4-bit substrings with only 0's
-		subshifts = cm_bf_extract<uint>(width, offsets, precomputedMask);
-		resultVec <<= (subshifts * 4);
-		val = cm_sum<uint>(resultVec); // compress 32-bit string
-		//printf("compressed %d \n", val);
-		// store into final tree;
-		write_int_tree<uint, 16>(tree, L_indices, val, cm_cbit(cm_pack_mask(submask)));
-		//printf("tree [%u, %u, %u, %u, %u, %u, %u, %u ]\n", tree[0], tree[1], tree[2], tree[3], tree[4], tree[5], tree[6], tree[7]);
+	L_indices[0] = L_INDEX + 2;
+	uint L_idx = 0;
 
-	}
-	tree[L_INDEX] = (L_indices[0] - (L_INDEX + 1)) * 8 + L_indices[1];
-
-	// compress T2
 	vector<ushort, 2> T2_indices = 0;
-	T2_indices[0] = T2_INDEX + 1;
+	T2_indices[0] = T2_INDEX + 2;
+
+	cmk_read<uint64_t, K_EDGES, 16>(input, threadOffset << 2, edges);
+	
+
+	// Every thread will compress K_EDGES edges into 32-bit integers
 #pragma unroll
-	for (uint j = 0; j < 64; j += 32) {
-		val = cm_pack_mask(T2.select<32, 1>(j));
-		if (!val)
-			continue;
-		subsubvec = val;
-		resultVec = cm_bf_extract<uint>(width, offsets, subsubvec);
-		submask = (resultVec != 0);
-		precomputedMask = lookupTable[cm_pack_mask(submask)]; // compress 4-bit substrings with only 0's
-		subshifts = cm_bf_extract<uint>(width, offsets, precomputedMask);
-		resultVec <<= (subshifts * 4);
-		val = cm_sum<uint>(resultVec); // compress 32-bit string
+	for (uint i = 0; i < K_EDGES && edges[i] != 0; i += cm_cbit(cm_pack_mask(mask))) {
+		subvec = edges.select<WORD_SZ, 1>(i);
 
-									   // store into final tree;
-		write_int_tree<uint, 16>(tree, T2_indices, val, cm_cbit(cm_pack_mask(submask)));
-	}
-	tree[T2_INDEX] = (T2_indices[0] - (T2_INDEX + 1)) * 8 + T2_indices[1];
+		range[0] = edges[i];
+		range[1] = range[0] + (WORD_SZ - (range[0] % WORD_SZ));
+		/**
+		* First step consists on obtaining a 32-bit uncompressed subgraph representation
+		**/
+		mask = (subvec >= range[0]) & (subvec < range[1]); // Get of all edges within the range of 32
+		shifts = 1 << (subvec % WORD_SZ); // Every edge x will serve as exponent 2^x 
+		subvec = 0;
+		subvec.merge(shifts, mask); // Merge the edges within the range only
+		sum = cm_sum<uint>(subvec); // final uncompressed result
 
-	// compress T1
-	vector<ushort, 2> T1_indices = 0;
-	T1_indices[0] = T1_INDEX + 1;
-	val = cm_pack_mask(T1);
-	if (val) {
-		subsubvec = val;
-		resultVec = cm_bf_extract<uint>(width, offsets, subsubvec);
-		submask = (resultVec != 0);
-		precomputedMask = lookupTable[cm_pack_mask(submask)]; // compress 4-bit substrings with only 0's
-		subshifts = cm_bf_extract<uint>(width, offsets, precomputedMask);
-		resultVec <<= (subshifts * 4);
-		val = cm_sum<uint>(resultVec); // compress 32-bit string
+		
 
-									   // store into final tree;
-		write_int_tree<uint, 16>(tree, T1_indices, val, cm_cbit(cm_pack_mask(submask)));
+		/**
+		* Second step consists on compressing the 32-bit subgraph representation from first step
+		**/
+		subsubvec = sum;
+		resultVec = cm_bf_extract<uint>(width, offsets, subsubvec); // Extract 8 4-bit integers from the 32-bit subgraph
+		submask = (resultVec != 0); // Mask those 4-bit != 0
+		precomputedMask = lookupTable[cm_pack_mask(submask)]; // Get the corresponding prefix mapping for the current submask
+		subshifts = cm_bf_extract<uint>(width, offsets, precomputedMask); // Extract corresponding shifts for every 4-bit integer
+		resultVec <<= (subshifts * K_VALUE); // Shift 4-bit integers to remove empty ones
+		sum = cm_sum<uint>(resultVec); // Final compressed resul
 
-		tree[T1_INDEX] = (T1_indices[0] - (T1_INDEX + 1)) * 8 + T1_indices[1];
+		// Write results into the tree
+		write_int_tree<uint, 16>(tree, L_indices, sum, cm_cbit(cm_pack_mask(submask))); // Write leaves
+		write_int_tree<uint, 16>(tree, T2_indices, cm_pack_mask(submask), K_VALUE); // Write upper level
 
-		// compress T0
-		val = cm_pack_mask(submask);
-		tree[T0_INDEX] = 1;
-		tree[T0_INDEX + 1] = val;
 	}
 
-	printf("tree [%u, %u, %u, %u, %u, %u, %u, %u ]\n", tree[0], tree[1], tree[2], tree[3], tree[4], tree[5], tree[6], tree[7]);
-	//printf("tree [%u, %u, %u, %u, %u, %u, %u, %u ]\n", tree[8], tree[9], tree[10], tree[11], tree[12], tree[13], tree[14], tree[15]);
-	// write final result
+	//tree[L_INDEX] = (L_indices[0] - (L_INDEX + 2)) * 8 + L_indices[1]; // Could be useful for further optimizations
+	//tree[T2_INDEX] = (T2_indices[0] - (T2_INDEX + 2)) * 8 + T2_indices[1];
 
+	cmk_write<uint, 16>(output, threadOffset << 2, tree);
 }
+
+
 
 // Stack structure used for keeping track of search path
 // TODO: resize vector if it becomes full

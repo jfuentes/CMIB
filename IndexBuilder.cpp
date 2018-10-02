@@ -232,11 +232,11 @@ bool loadFromFile(std::vector<uint32_t> &data, string filename) {
 
 void K2treeConstructionTest(unsigned int size, string filename) {
 
-  int iterations = 0, tempSize = size / K2_ENTRIES;
+  int iterations = 0, tempSize = size / K_ENTRIES;
 
-  while (tempSize >= K2_ENTRIES * 4) { // minimum matriz size to dispatch kernels
+  while (tempSize >= K_ENTRIES * 4) { // minimum matriz size to dispatch kernels
     iterations++;
-    tempSize /= K2_ENTRIES;
+    tempSize /= K_ENTRIES;
   }
   std::cout << "Will dispatch Kernel " << iterations << " times for " << filename << "\n";
 
@@ -256,13 +256,13 @@ void K2treeConstructionTest(unsigned int size, string filename) {
   memset(T, 0, sizeof(uint64_t) * (size / 64));
   // determine how many threads we need for each iteration
   unsigned int width, height; // thread space width and height
-  unsigned int total_threads = size / K2_ENTRIES;
+  unsigned int total_threads = size / K_ENTRIES;
   width = total_threads / 2;
   height = total_threads / 2;
 
   // Every kernel i will write its results into Louts[i] and L
   uint32_t Lsize;
-  Lsize = (K2_ENTRIES / WORD_SZ + 2) * total_threads; // (L + extabits) * total_threads
+  Lsize = (K_ENTRIES / WORD_SZ + 2) * total_threads; // (L + extabits) * total_threads
   uint32_t *Lout;
   Lout = (uint32_t *)CM_ALIGNED_MALLOC(Lsize * sizeof(uint32_t), 0x1000);
   uint32_t *Tsizes;
@@ -270,8 +270,8 @@ void K2treeConstructionTest(unsigned int size, string filename) {
   uint32_t **Touts;
   Touts = (uint32_t **)CM_ALIGNED_MALLOC(iterations + 1 * sizeof(uint32_t*), 0x1000);
 
-  for (int i = 0, numThreads = total_threads; i <= iterations; i++, numThreads /= K2_ENTRIES) {
-    Tsizes[i] = (ceil((K2_ENTRIES / pow(K2_VALUE, 2)) / WORD_SZ) + ceil((K2_ENTRIES / pow(K2_VALUE, 3)) / WORD_SZ) + 6) * numThreads; // 3 extra words for counting bits
+  for (int i = 0, numThreads = total_threads; i <= iterations; i++, numThreads /= K_ENTRIES) {
+    Tsizes[i] = (ceil((K_ENTRIES / pow(K2_VALUE, 2)) / WORD_SZ) + ceil((K_ENTRIES / pow(K2_VALUE, 3)) / WORD_SZ) + 6) * numThreads; // 3 extra words for counting bits
     Touts[i] = (uint32_t *)CM_ALIGNED_MALLOC(Tsizes[i] * sizeof(uint32_t), 0x1000);
   }
 
@@ -382,7 +382,7 @@ void K2treeConstructionTest(unsigned int size, string filename) {
     }
   }
 
-  int numThreads = total_threads / K2_ENTRIES;
+  int numThreads = total_threads / K_ENTRIES;
   for (int i = 1; i <= iterations; i++) { // only call GPU mid_levels kernel when we have enough work to offload
     cm_result_check(mid_levels_kernel[i - 1]->SetThreadCount(numThreads));
     cm_result_check(mid_levels_kernel[i - 1]->SetKernelArg(0, sizeof(SurfaceIndex), input_idx));
@@ -398,7 +398,7 @@ void K2treeConstructionTest(unsigned int size, string filename) {
         tid++;
       }
     }
-    numThreads /= K2_ENTRIES;
+    numThreads /= K_ENTRIES;
   }
 
   // Creates a CmTask object.
@@ -739,9 +739,9 @@ void K2treeQueries(unsigned k, unsigned size, unsigned numThreads,
 void K2treeConstructionFromEdges(unsigned int size, string filename) {
 
 
-  uint32_t *edges;
-  edges = (uint32_t*)CM_ALIGNED_MALLOC((size*2) * sizeof(uint32_t), 0x1000);
-  memset(edges, 0, sizeof(uint64_t) * (size*2));
+  uint64_t *edges;
+  edges = (uint64_t*)CM_ALIGNED_MALLOC((size) * sizeof(uint64_t), 0x1000);
+  memset(edges, 0, sizeof(uint64_t) * (size));
   //set values
   edges[0] = 6; // 1;
   edges[1] = 7; // 18;
@@ -757,29 +757,13 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   edges[11] = 146; // 53;
   edges[12] = 148; // 54;
   edges[13] = 150; // 0;
-  edges[14] = 0;
-  edges[15] = 0;
-  edges[16] = 0;
-  edges[17] = 0;
-  edges[18] = 0;
-  edges[19] = 0;
-  edges[20] = 0;
-  edges[21] = 0;
-  edges[22] = 0;
-  edges[23] = 0;
-  edges[24] = 0;
-  edges[25] = 0;
-  edges[26] = 0;
-  edges[27] = 0;
-  edges[28] = 0;
-  edges[29] = 0;
-  edges[30] = 0;
-  edges[31] = 0;
+
 
   // Allocate space for final K2tree structures L and T
   uint64_t *L;
-  L = (uint64_t*)CM_ALIGNED_MALLOC((size / 64) * sizeof(uint64_t), 0x1000);
-  memset(L, 0, sizeof(uint64_t) * (size / 64));
+  uint32_t l_size = 16;
+  L = (uint64_t*)CM_ALIGNED_MALLOC((l_size) * sizeof(uint64_t), 0x1000);
+  memset(L, 0, sizeof(uint64_t) * (l_size));
   uint64_t *T;
   T = (uint64_t*)CM_ALIGNED_MALLOC((size / 64) * sizeof(uint64_t), 0x1000);
   memset(T, 0, sizeof(uint64_t) * (size / 64));
@@ -827,8 +811,10 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
 
   // create buffers for input matrix, T and L
   CmBuffer *edgesBuf;
-  cm_result_check(device->CreateBuffer(size*2 * sizeof(uint64_t), edgesBuf));
+  cm_result_check(device->CreateBuffer(size * sizeof(uint64_t), edgesBuf));
   cm_result_check(edgesBuf->WriteSurface((const unsigned char*)edges, NULL));
+  CmBuffer *outBuf;
+  cm_result_check(device->CreateBuffer(l_size * sizeof(uint64_t), outBuf));
 
 
   // When a surface is created by the CmDevice a SurfaceIndex object is
@@ -837,7 +823,8 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   // Gets the input surface index.
   SurfaceIndex *edges_idx = nullptr;
   cm_result_check(edgesBuf->GetIndex(edges_idx));
-  ;
+  SurfaceIndex *out_idx = nullptr;
+  cm_result_check(outBuf->GetIndex(out_idx));
 
   // Creates a CmThreadSpace object.
   // There are two usage models for the thread space. One is to define the
@@ -858,20 +845,8 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
 
   cm_result_check(construction_edges_kernel->SetThreadCount(total_threads));
   cm_result_check(construction_edges_kernel->SetKernelArg(0, sizeof(SurfaceIndex), edges_idx));
-  unsigned int temp = 0;
-
-  unsigned chunk = 13 / 2;
-  for (unsigned i = 0; i < total_threads; i++) {
-    unsigned start = chunk * i;
-    unsigned end = chunk * i + chunk;
-    cm_result_check(construction_edges_kernel->SetThreadArg(i, 1, sizeof(start), &start));
-
-    cm_result_check(construction_edges_kernel->SetThreadArg(i, 2, sizeof(start), &start));
-
-    cm_result_check(construction_edges_kernel->SetThreadArg(i, 3, sizeof(end), &end));
-
-  }
-
+  cm_result_check(construction_edges_kernel->SetKernelArg(1, sizeof(SurfaceIndex), out_idx));
+  cm_result_check(construction_edges_kernel->SetKernelArg(2, sizeof(size), &size));
 
   static const uint PRECOMPUTED_SUM[256] = { 0, 0, 0, 16, 0, 256, 256, 528, 0, 4096, 4096, 8208, 4096, 8448, 8448, 12816, 0, 65536, 65536, 131088,
 	  65536, 131328, 131328, 197136, 65536, 135168, 135168, 204816, 135168, 205056, 205056, 274960, 0, 1048576, 1048576, 2097168, 1048576, 2097408,
@@ -892,7 +867,7 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
 	  1126174720, 1412440080, 1126174720, 1412440320, 1412440320, 1698705936, 839909376, 1126236160, 1126236160, 1412562960, 1126236160, 1412563200, 1412563200,
 	  1698890256, 1126236160, 1412567040, 1412567040, 1698897936, 1412567040, 1698898176, 1698898176, 1985229328 };
 
-  cm_result_check(construction_edges_kernel->SetKernelArg(4, sizeof(uint32_t) * 256, PRECOMPUTED_SUM));
+  cm_result_check(construction_edges_kernel->SetKernelArg(3, sizeof(uint32_t) * 256, PRECOMPUTED_SUM));
 
 
 
@@ -926,6 +901,13 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   cm_result_check(event->WaitForTaskFinished(time_out));
 
   clock_t end = clock(); // end timer
+
+  cm_result_check(outBuf->ReadSurface((unsigned char *)L, event));
+  std::cout << "Result:\n";
+  for (int i = 0; i < l_size; i++) {
+	  std::cout << L[i] << " ";
+  }
+  std::cout << std::endl;
 
 
   std::cout << endl;
@@ -1412,6 +1394,8 @@ int main(int argc, char * argv[])
   //unsigned t_size = 208112; unsigned l_size = 157864; // 1024
   unsigned t_size = 11477624; unsigned l_size = 7709184; // 8192
 
+  
+
   std::string edgesFilename("web-NotreDame.txt");
   std::vector<uint32_t> vertices_x, vertices_y;
 
@@ -1419,6 +1403,8 @@ int main(int argc, char * argv[])
 	  std::cout << "Error loading edges from ARC file\n";
 
   std::cout << "Loaded " << vertices_x.size() << " " << vertices_y.size() << " vertices from ARC file\n";
+
+  
 
   //K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
   //K2treeConstructionTest(size*size, "matrix16x16_original.txt");
@@ -1428,9 +1414,9 @@ int main(int argc, char * argv[])
   //  "L_"+to_string(size)+"_"+to_string(p)+".txt", "T_rank_"+to_string(size)+"_"+to_string(p)+".txt", height, t_size, l_size);
   
 
-  //generateMortonNumbers(vertices_x.size(), vertices_x, vertices_y);
+  generateMortonNumbers(vertices_x.size(), vertices_x, vertices_y);
   //radixSort();
-  K2treeConstructionFromEdges(32, "");
+  K2treeConstructionFromEdges(256, "");
 
 
 }

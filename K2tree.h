@@ -5,8 +5,11 @@
 #define SIMD_SIZE 8
 #define MAX_TS_WIDTH 512
 #define K2_VALUE 2
-#define K2_ENTRIES 64
+#define K_VALUE (K2_VALUE*K2_VALUE)
+#define K_ENTRIES 64
+#define K_EDGES 256
 #define BLOCK_SZ 8 // ideally should be 16
+
 #define WORD_SZ 32
 
 #define STACK_SZ 512
@@ -14,7 +17,7 @@
 #define MAX_INT 2147483647
 
 #define L_INDEX 0
-#define T2_INDEX 9
+#define T2_INDEX 8
 #define T1_INDEX 12
 #define T0_INDEX 14
 
