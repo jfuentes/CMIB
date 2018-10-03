@@ -8,6 +8,8 @@
 #define K_VALUE (K2_VALUE*K2_VALUE)
 #define K_ENTRIES 64
 #define K_EDGES 256
+#define K_MORTON_NUMBERS 256
+
 #define BLOCK_SZ 8 // ideally should be 16
 
 #define WORD_SZ 32

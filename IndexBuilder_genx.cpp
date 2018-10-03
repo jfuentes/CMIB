@@ -601,29 +601,30 @@ _GENX_MAIN_ void cmk_mid_levels_construction(SurfaceIndex matrix_in, SurfaceInde
 }
 
 _GENX_MAIN_ void cmk_generate_morton_numbers(SurfaceIndex vertices_x, SurfaceIndex vertices_y, SurfaceIndex ouput, uint numEdges) {
-	vector<uint, 32> x, y;
+	vector<uint, 32> x, y, width = 2, offset;
 	vector<uint, 32> src = 0;
 
+	uint h_pos = get_thread_origin_x() + get_thread_origin_y()*MAX_TS_WIDTH;
+	uint threadOffset = K_MORTON_NUMBERS * h_pos;
 
-	uint64_t mask = 3;
-	uint global_id = get_thread_origin_x();
-	uint edgesPerThread = numEdges / GPU_THREADS;
-	uint threadOffset = edgesPerThread * global_id;
+
 #pragma unroll
-	for (uint currentChunk = 0; currentChunk < edgesPerThread; currentChunk += 32) {
+	for (uint currentChunk = 0; currentChunk < K_MORTON_NUMBERS; currentChunk += 32) {
 		cmk_read<uint, 32>(vertices_x, (threadOffset + currentChunk) << 2, x);
 		cmk_read<uint, 32>(vertices_y, (threadOffset + currentChunk) << 2, y);
 		vector<uint64_t, 32> result = 0;
 
 #pragma unroll
 		for (uint k = 0; k < 64; k += 4) { // x
-			result.select<32, 1>(0) |= cm_bf_insert<uint64_t>(2, k, x.select<32, 1>(0), src);
+			offset = k;
+			result.select<32, 1>(0) |= cm_bf_insert<uint64_t>(width, offset, x.select<32, 1>(0), src);
 			x.select<32, 1>(0) >>= 2;
 		}
 
 #pragma unroll
 		for (uint k = 2; k < 64; k += 4) { // y
-			result.select<32, 1>(0) |= cm_bf_insert<uint64_t>(2, k, y.select<32, 1>(0), src);
+			offset = k;
+			result.select<32, 1>(0) |= cm_bf_insert<uint64_t>(width, offset, y.select<32, 1>(0), src);
 			y.select<32, 1>(0) >>= 2;
 		}
 
@@ -650,9 +651,9 @@ inline _GENX_ void write_int_tree(vector_ref<ty, size> tree, vector_ref<ushort, 
 
 _GENX_MAIN_ void cmk_construction_from_edges(SurfaceIndex input, SurfaceIndex output,  uint numEdges, vector<uint, 256> lookupTable) {
 
-	uint global_id = get_thread_origin_x();
-	uint edgesPerThread = numEdges / GPU_THREADS;
-	uint threadOffset = edgesPerThread * global_id;
+	uint h_pos = get_thread_origin_x() + get_thread_origin_y()*MAX_TS_WIDTH;
+	uint threadOffset = K_EDGES * h_pos;
+	uint threadOffsetOutput = h_pos * 8;
 
 	vector<uint64_t, K_EDGES> edges; 
 	vector<uint, WORD_SZ> shifts;
@@ -676,9 +677,8 @@ _GENX_MAIN_ void cmk_construction_from_edges(SurfaceIndex input, SurfaceIndex ou
 	vector<ushort, 2> T2_indices = 0;
 	T2_indices[0] = T2_INDEX + 2;
 
-	cmk_read<uint64_t, K_EDGES, 16>(input, threadOffset << 2, edges);
+	cmk_read<uint64_t, K_EDGES, 16>(input, threadOffset * sizeof(uint64_t), edges);
 	
-
 	// Every thread will compress K_EDGES edges into 32-bit integers
 #pragma unroll
 	for (uint i = 0; i < K_EDGES && edges[i] != 0; i += cm_cbit(cm_pack_mask(mask))) {
@@ -717,7 +717,7 @@ _GENX_MAIN_ void cmk_construction_from_edges(SurfaceIndex input, SurfaceIndex ou
 	//tree[L_INDEX] = (L_indices[0] - (L_INDEX + 2)) * 8 + L_indices[1]; // Could be useful for further optimizations
 	//tree[T2_INDEX] = (T2_indices[0] - (T2_INDEX + 2)) * 8 + T2_indices[1];
 
-	cmk_write<uint, 16>(output, threadOffset << 2, tree);
+	cmk_write<uint, 16>(output, threadOffsetOutput * sizeof(uint64_t), tree);
 }
 
 

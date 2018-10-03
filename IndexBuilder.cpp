@@ -736,9 +736,9 @@ void K2treeQueries(unsigned k, unsigned size, unsigned numThreads,
 
 
 
-void K2treeConstructionFromEdges(unsigned int size, string filename) {
+void K2treeConstructionFromEdges(unsigned int size, uint64_t *edges) {
 
-
+  /*
   uint64_t *edges;
   edges = (uint64_t*)CM_ALIGNED_MALLOC((size) * sizeof(uint64_t), 0x1000);
   memset(edges, 0, sizeof(uint64_t) * (size));
@@ -758,10 +758,26 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   edges[12] = 148; // 54;
   edges[13] = 150; // 0;
 
+  edges[256] = 6; // 1;
+  edges[257] = 7; // 18;
+  edges[258] = 10; // 19;
+  edges[259] = 11; // 20;
+  edges[260] = 18; // 22;
+  edges[261] = 30; // 23;
+  edges[262] = 55; // 25;
+  edges[263] = 62; // 41;
+  edges[264] = 73; // 42;
+  edges[265] = 98; // 48;
+  edges[266] = 104; // 52;
+  edges[267] = 146; // 53;
+  edges[268] = 148; // 54;
+  edges[269] = 150; // 0;
+  */
+
 
   // Allocate space for final K2tree structures L and T
   uint64_t *L;
-  uint32_t l_size = 16;
+  uint32_t l_size = size / 64;
   L = (uint64_t*)CM_ALIGNED_MALLOC((l_size) * sizeof(uint64_t), 0x1000);
   memset(L, 0, sizeof(uint64_t) * (l_size));
   uint64_t *T;
@@ -769,9 +785,16 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   memset(T, 0, sizeof(uint64_t) * (size / 64));
   // determine how many threads we need for each iteration
   unsigned int width, height; // thread space width and height
-  unsigned int total_threads = 1;
-  //width = total_threads / 2;
-  //height = total_threads / 2;
+  unsigned int total_threads = size / K_EDGES;
+  if (total_threads > MAX_TS_WIDTH) {
+	  width = MAX_TS_WIDTH;
+	  height = total_threads / MAX_TS_WIDTH;
+  }
+  else {
+	  width = total_threads;
+	  height = 1;
+  }
+  
 
 
   // Creates a CmDevice from scratch.
@@ -831,8 +854,8 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   // dependency between threads to run in the GPU. The other is to define a
   // thread space where each thread can get a pair of coordinates during
   // kernel execution. For this example, we use the latter usage model.
-  //CmThreadSpace *thread_space = nullptr;
-  //cm_result_check(device->CreateThreadSpace(width, height, thread_space));
+  CmThreadSpace *thread_space = nullptr;
+  cm_result_check(device->CreateThreadSpace(width, height, thread_space));
 
   // Creates a task queue.
   // The CmQueue is an in-order queue. Tasks get executed according to the
@@ -843,7 +866,7 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   cm_result_check(device->CreateQueue(cmd_queue));
 
 
-  cm_result_check(construction_edges_kernel->SetThreadCount(total_threads));
+  
   cm_result_check(construction_edges_kernel->SetKernelArg(0, sizeof(SurfaceIndex), edges_idx));
   cm_result_check(construction_edges_kernel->SetKernelArg(1, sizeof(SurfaceIndex), out_idx));
   cm_result_check(construction_edges_kernel->SetKernelArg(2, sizeof(size), &size));
@@ -897,14 +920,18 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
 
   // For small input size, we only have a small number of threads
   // we don't call kernel to compute prefix sum. intead of, CPU simply performs the job
-  cm_result_check(cmd_queue->Enqueue(construction_edges_task, event));
+  cm_result_check(cmd_queue->Enqueue(construction_edges_task, event, thread_space));
   cm_result_check(event->WaitForTaskFinished(time_out));
 
   clock_t end = clock(); // end timer
 
   cm_result_check(outBuf->ReadSurface((unsigned char *)L, event));
   std::cout << "Result:\n";
-  for (int i = 0; i < l_size; i++) {
+  for (int i = 0; i < 8; i++) {
+	  std::cout << L[i] << " ";
+  }
+  std::cout << std::endl;
+  for (int i = 8; i < 16; i++) {
 	  std::cout << L[i] << " ";
   }
   std::cout << std::endl;
@@ -921,12 +948,11 @@ void K2treeConstructionFromEdges(unsigned int size, string filename) {
   // were created using this device instance that have not explicitly been
   // destroyed by calling the respective destroy functions.
 
-  CM_ALIGNED_FREE(edges);
   CM_ALIGNED_FREE(T);
   CM_ALIGNED_FREE(L);
 }
 
-void generateMortonNumbers(uint32_t size, std::vector<uint32_t> &vertices_x, std::vector<uint32_t> &vertices_y) {
+void generateMortonNumbers(uint32_t size, std::vector<uint32_t> &vertices_x, std::vector<uint32_t> &vertices_y, uint64_t *mortonNumbers) {
 
   unsigned int numEdges = size;
   unsigned int numMortonNumbers = size;
@@ -939,16 +965,19 @@ void generateMortonNumbers(uint32_t size, std::vector<uint32_t> &vertices_x, std
   edges_y = (uint32_t*)CM_ALIGNED_MALLOC((numEdges) * sizeof(uint32_t), 0x1000);
 
 
-  // Allocate space for output
-  uint64_t *mortonNumbers;
-  mortonNumbers = (uint64_t*)CM_ALIGNED_MALLOC((numMortonNumbers) * sizeof(uint64_t), 0x1000);
-  memset(mortonNumbers, 0, sizeof(uint64_t) * (numMortonNumbers));
+  
 
   // determine how many threads we need for each iteration
   unsigned int width, height; // thread space width and height
-  unsigned int total_threads = GPU_THREADS;
-  width = total_threads;
-  height = 1;
+  unsigned int total_threads = size / K_EDGES;
+  if (total_threads > MAX_TS_WIDTH) {
+	  width = MAX_TS_WIDTH;
+	  height = total_threads / MAX_TS_WIDTH;
+  }
+  else {
+	  width = total_threads;
+	  height = 1;
+  }
 
 
 
@@ -1028,7 +1057,7 @@ void generateMortonNumbers(uint32_t size, std::vector<uint32_t> &vertices_x, std
   cm_result_check(device->CreateQueue(cmd_queue));
 
 
-  cm_result_check(morton_kernel->SetThreadCount(total_threads));
+  //cm_result_check(morton_kernel->SetThreadCount(total_threads));
   cm_result_check(morton_kernel->SetKernelArg(0, sizeof(SurfaceIndex), edges_x_idx));
   cm_result_check(morton_kernel->SetKernelArg(1, sizeof(SurfaceIndex), edges_y_idx));
   cm_result_check(morton_kernel->SetKernelArg(2, sizeof(SurfaceIndex), morton_idx)); 
@@ -1087,7 +1116,7 @@ void generateMortonNumbers(uint32_t size, std::vector<uint32_t> &vertices_x, std
 
   CM_ALIGNED_FREE(edges_x);
   CM_ALIGNED_FREE(edges_y);
-  CM_ALIGNED_FREE(mortonNumbers);
+  
 
 }
 
@@ -1210,6 +1239,7 @@ SortResults sortVectorCM(KeyType *&keys, uint32_t numKeys) {
 	double cpuTimeStart = getSeconds();
 
 	// start sorting
+	clock_t start = clock(); // end timer
 	for (uint32_t radixPos = 0; radixPos < KEY_DIGITS; radixPos += RADIX_DIGITS) {
 		// set kernel parameters
 		cm_result_check(HistKernel->SetKernelArg(0, sizeof(numKeys), &numKeys));
@@ -1228,6 +1258,7 @@ SortResults sortVectorCM(KeyType *&keys, uint32_t numKeys) {
 
 		// Enqueue Tasks
 		// Note that for EMU Mode we use a standard threadspace but with HW mode we use a threadgroupspace
+		
 #ifdef CMRT_EMU
 		cm_result_check(taskQueue->Enqueue(HistTask, HistTaskEvent, tsHist));
 		cm_result_check(HistTaskEvent->WaitForTaskFinished());
@@ -1247,7 +1278,6 @@ SortResults sortVectorCM(KeyType *&keys, uint32_t numKeys) {
 		cm_result_check(taskQueue->EnqueueWithGroup(KeyScanTask, KeyScanTaskEvent, tsHist));
 		cm_result_check(KeyScanTaskEvent->WaitForTaskFinished());
 #endif
-
 		// Get execution time
 		cm_result_check(HistTaskEvent->GetExecutionTime(histKernelTime));
 		cm_result_check(HistScanTaskEvent->GetExecutionTime(histScanKernelTime));
@@ -1263,7 +1293,8 @@ SortResults sortVectorCM(KeyType *&keys, uint32_t numKeys) {
 		// swap the buffers
 		std::swap(outputBuffData, inputBuffData);
 	}
-
+	clock_t end = clock(); // end timer
+	std::cout << " GPU Sorting Time = " << end - start << " msec " << endl;
 	double cpuTimeEnd = getSeconds();
 
 	// calculate performance statistics
@@ -1295,20 +1326,20 @@ SortResults sortVectorSTD(std::vector<KeyType> &keys) {
 	return sr;
 }
 
-int radixSort() {
-	uint32_t numKeys = 1024 * 1024;
+int radixSort(int numKeys, KeyType *inputPtr) {
+	//uint32_t numKeys = 1024 * 1024;
 	std::vector<KeyType> inputVector;
-	KeyType* inputPtr = (KeyType*)_aligned_malloc(numKeys * sizeof(KeyType), 4096);
+	//KeyType* inputPtr = (KeyType*)_aligned_malloc(numKeys * sizeof(KeyType), 4096);
 
 	// generate random data
-	std::random_device r;
-	std::default_random_engine e1(0);
-	std::uniform_int_distribution<KeyType> uniform_dist(0, KeyType(std::numeric_limits<KeyType>::max));
+	//std::random_device r;
+	//std::default_random_engine e1(0);
+	//std::uniform_int_distribution<KeyType> uniform_dist(0, KeyType(std::numeric_limits<KeyType>::max));
 
 	for (uint32_t i = 0; i < numKeys; i += 1) {
-		KeyType v = uniform_dist(e1);
-		inputVector.push_back(v);
-		inputPtr[i] = v;
+		//KeyType v = uniform_dist(e1);
+		inputVector.push_back(inputPtr[i]);
+		//inputPtr[i] = v;
 	}
 
 	// Sort using CM Radix Sort
@@ -1396,15 +1427,19 @@ int main(int argc, char * argv[])
 
   
 
-  std::string edgesFilename("web-NotreDame.txt");
+  std::string edgesFilename("web-BerkStan.txt");
   std::vector<uint32_t> vertices_x, vertices_y;
 
   if (!loadEdges(edgesFilename, vertices_x, vertices_y))
 	  std::cout << "Error loading edges from ARC file\n";
 
+  vertices_x.erase(vertices_x.begin() + (1024*1024*4), vertices_x.end()); //intentionally shrinked
+  vertices_y.erase(vertices_y.begin() + (1024 * 1024*4), vertices_y.end());
+
   std::cout << "Loaded " << vertices_x.size() << " " << vertices_y.size() << " vertices from ARC file\n";
 
-  
+  int totalEdges = vertices_x.size();
+
 
   //K2treeConstructionTest(size*size, "matrix"+to_string(size)+"x"+to_string(size)+"_"+to_string(p)+".txt");
   //K2treeConstructionTest(size*size, "matrix16x16_original.txt");
@@ -1413,10 +1448,27 @@ int main(int argc, char * argv[])
   //K2treeQueries(k, size, numThreads, "T_"+to_string(size)+"_"+to_string(p)+"_h_"+to_string(height)+".txt",
   //  "L_"+to_string(size)+"_"+to_string(p)+".txt", "T_rank_"+to_string(size)+"_"+to_string(p)+".txt", height, t_size, l_size);
   
+  // Allocate space for output
+  uint64_t *mortonNumbers;
+  mortonNumbers = (uint64_t*)CM_ALIGNED_MALLOC((totalEdges) * sizeof(uint64_t), 0x1000);
+  memset(mortonNumbers, 0, sizeof(uint64_t) * (totalEdges));
 
-  generateMortonNumbers(vertices_x.size(), vertices_x, vertices_y);
-  //radixSort();
-  K2treeConstructionFromEdges(256, "");
+  generateMortonNumbers(totalEdges, vertices_x, vertices_y, mortonNumbers);
+  
+  for (int i = 0; i < 20; i++) {
+	  std::cout << mortonNumbers[i] << " ";
+  }
+  std::cout << std::endl;
+  radixSort(totalEdges, mortonNumbers);
 
 
+  K2treeConstructionFromEdges(totalEdges, mortonNumbers);
+
+  for (int i = 0; i < 20; i++) {
+	  std::cout << mortonNumbers[i] << " ";
+  }
+  std::cout << std::endl;
+
+
+  CM_ALIGNED_FREE(mortonNumbers);
 }
